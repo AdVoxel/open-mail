@@ -1,60 +1,72 @@
 # Mail
 
-A personal mail client for Gmail, iCloud and Zoho with AI triage and reply drafting.
-
-- **Desktop (Electron)**: `apps/desktop`. Its main process connects to your mailboxes over IMAP/SMTP, calls Claude, and serves a local API on port 8787.
-- **Mobile (Expo / React Native)**: `apps/mobile`. A thin client for that local API over your Wi-Fi. No keys or passwords live on the phone.
-- **AI**: by default Claude Haiku 5.5 triages every email (category, priority, summary, action items) and Claude Sonnet 5.5 drafts replies only when you ask. Either job can be switched to OpenAI, Gemini, a local Ollama model, or any OpenAI-compatible API in **Settings → AI engines**.
+A personal mail client for Gmail, iCloud and Zoho, without AI. One always-on server (e.g. a Raspberry Pi) holds the accounts and talks IMAP/SMTP to the providers; the desktop and mobile apps only talk to that server.
 
 ```
-packages/core        AI calls + IMAP/SMTP (Node only)
-packages/api-client  typed fetch client shared by both apps
-apps/server          local HTTP API (embedded in desktop, or run standalone)
-apps/desktop         Electron + React
-apps/mobile          Expo + React Native
+apps (desktop / phone / browser) ──HTTP + token──▶ server ──IMAP/SMTP──▶ Gmail · iCloud · Zoho
 ```
 
-## Setup
+```
+server               the mail server: accounts, IMAP/SMTP, scheduled sending, HTTP API
+packages/core        mail logic used by the server (Node only)
+packages/api-client  typed fetch client for the API, shared by the apps
+apps/mobile          the UI: Expo + gluestack-ui (iOS, Android and web)
+apps/desktop         Electron window around the web build of apps/mobile
+```
 
-1. `npm install` (then `node node_modules/electron/install.js` if Electron's binary didn't download).
-2. Copy `.env.example` to `.env` and set `MAIL_APP_TOKEN` (and `ANTHROPIC_API_KEY`, or save a key in Settings later).
-3. Desktop: `npm run desktop`, then open **Settings** to add accounts.
-4. Mobile: copy `apps/mobile/.env.example` to `apps/mobile/.env.local`, set your computer's Wi-Fi IP and the same token, then `npm run mobile` and scan the QR code with Expo Go.
+## Run it locally
 
-Without the desktop app open, `npm run server` runs the API alone.
+1. `npm install` (if Electron's binary didn't download: `node node_modules/electron/install.js`).
+2. `cp .env.example .env` and set `MAIL_APP_TOKEN` to a random string.
+3. `cp apps/mobile/.env.example apps/mobile/.env.local` and put the same token there.
+4. Start the server: `npm run server` (port 8787; data goes to `server/data/`).
+5. Start the UI:
+   - browser: `npm run web`, then open http://localhost:8081
+   - desktop: `npm run web` in one terminal, `npm run desktop` in another
+   - phone: `npm run mobile` and open it in Expo Go. Set `EXPO_PUBLIC_MAIL_API_URL` to your computer's LAN IP. On WSL2 the phone can't reach the server without port forwarding or mirrored networking.
+6. Open **Settings → Add an account**.
 
-## Adding accounts
+`npm run desktop:build` exports the web UI into `apps/desktop/out/web` and builds the Electron app, which then serves the UI itself.
 
-**Settings → Add an account** has presets for Gmail, iCloud, Zoho (.com and EU) and Outlook, plus **Other (custom servers)** where you enter your own IMAP/SMTP host, port and security (SSL/TLS or STARTTLS). "Test connection" logs in without saving. Passwords are encrypted with the macOS Keychain (`config.json` in the app's data folder) and never sent to the phone.
+Values in `apps/mobile/.env.local` are only defaults: the server address and token can be changed in **Settings → Server**, which is how you'll point the apps at the Raspberry Pi later.
 
-- **iCloud** only supports app-specific passwords (account.apple.com → Sign-In and Security). If login fails with your full address, open "Edit server settings" and set the username to the part before the `@`.
-- **Gmail** works with an app password (needs 2-Step Verification), or with Google sign-in below.
+## Accounts
 
-### Google sign-in (optional)
+All providers use IMAP/SMTP with an app password. iCloud has no other API, and this keeps all three working the same way.
 
-1. In [Google Cloud Console](https://console.cloud.google.com), create a project and enable the **Gmail API**.
-2. Under **Google Auth Platform**, set up the consent screen as **External**, add your Gmail address as a **test user**, and add the scope `https://mail.google.com/`.
-3. Under **Clients**, create an OAuth client of type **Desktop app**.
-4. Put its client ID and secret in `.env` as `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` and restart the app.
+- **Gmail**: Google Account → Security → 2-Step Verification → App passwords. "Sign in with Google" is optional (set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, Desktop-app OAuth client with the `https://mail.google.com/` scope). Its redirect goes to `127.0.0.1` on the server, so it only works when the browser runs on the same machine as the server.
+- **iCloud**: account.apple.com → Sign-In and Security → App-Specific Passwords. iCloud doesn't keep sent mail, so "Save a copy in Sent" is on by default.
+- **Zoho**: enable IMAP in Zoho Mail settings and create an app password (use "Zoho (EU)" for .eu accounts). If sent mail doesn't show up in Sent, turn on "Save a copy in Sent" for that account.
 
-While the Google project is in "Testing" status, Google expires the sign-in after 7 days, so you'd need to remove and re-add the account weekly. An app password doesn't expire.
+Passwords are encrypted (AES-256-GCM) in `server/data/accounts.json` with the key in `server/data/secret.key`, or `MAIL_APP_SECRET_KEY`. Back up both; never commit them.
 
-## AI engines
+## API
 
-Triage and drafting each have their own provider, model and API key (**Settings → AI engines**):
+Every endpoint except `/api/health` needs `Authorization: Bearer $MAIL_APP_TOKEN`. Message endpoints take `?folder=` (default `INBOX`).
 
-| Provider | Base URL | Notes |
+| Method | Path | |
 |---|---|---|
-| Claude | — | Haiku 5.5 / Sonnet 5.5 / Opus 5.5 |
-| OpenAI | `https://api.openai.com/v1` | needs an API key |
-| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | needs an API key |
-| Ollama | `http://localhost:11434/v1` | free and local; run `ollama pull <model>` first |
-| Other | your own | any API that implements `/chat/completions` |
+| GET | `/api/health` | liveness, no auth |
+| GET | `/api/capabilities` | server version, Google sign-in available |
+| GET / POST | `/api/accounts` | list / add (`{address, password, imap, smtp, name?, label?, saveSentCopy?}`, tested before saving) |
+| POST | `/api/accounts/test` | test credentials without saving |
+| PATCH / DELETE | `/api/accounts/:id` | rename, sender name, saveSentCopy / remove |
+| POST, GET | `/api/accounts/google`, `/api/accounts/google/:session` | start Google sign-in (returns a URL) / poll it |
+| GET | `/api/accounts/:id/folders` | folders with role (inbox, sent, trash…) and unread counts |
+| GET | `/api/messages?limit=` | newest mail across all inboxes |
+| GET | `/api/accounts/:id/messages?folder=&limit=&offset=&q=` | list or search (Gmail search syntax on Gmail) |
+| GET | `/api/accounts/:id/messages/:uid` | full message: text, html, cc, attachments |
+| GET | `/api/accounts/:id/messages/:uid/attachments/:index` | download an attachment |
+| PATCH | `/api/accounts/:id/messages/:uid` | `{seen?, flagged?, answered?}` |
+| POST | `/api/accounts/:id/messages/:uid/move` | `{to: "archive" \| "trash" \| "junk" \| "inbox" \| <folder path>}` |
+| DELETE | `/api/accounts/:id/messages/:uid` | move to Trash (permanent if already in Trash) |
+| POST | `/api/accounts/:id/send` | `{to, cc?, bcc?, subject, text, html?, inReplyTo?, references?, attachments?: [{filename, contentType?, content: base64}], sendAt?}`; a future `sendAt` schedules it |
+| GET / POST | `/api/scheduled` | list / schedule (`{accountId, sendAt, …mail}`) |
+| GET / PATCH / DELETE | `/api/scheduled/:id` | read / edit or reschedule / cancel |
+| POST | `/api/scheduled/:id/send` | send now (also retries a failed one) |
 
-Non-Claude models must support JSON-schema structured output for triage. Most current OpenAI and Gemini models do; small local models may not.
+Scheduled mail is stored in `server/data/scheduled.json` and sent by the server, so it goes out even when every app is closed. Failed sends are retried 3 times. A send interrupted by a restart is marked failed rather than resent, so nothing goes out twice.
 
-## Cost notes
+## Raspberry Pi (later)
 
-- Each email is triaged once per run (cached in memory) at effort `low`.
-- Drafting with Sonnet happens only on demand.
-- Triage results are not saved to disk yet, so restarting re-triages the inbox.
+Copy the repo, run `npm install`, create `.env`, and run `npm run server` under systemd with `Restart=always`. Then set the Pi's address in each app's **Settings → Server**. Use HTTPS (e.g. Tailscale or a reverse proxy) before exposing it beyond your home network.

@@ -1,72 +1,77 @@
-import { app, BrowserWindow, dialog, safeStorage, shell } from "electron";
+// Desktop shell: a native window around the shared Expo/gluestack UI.
+// The UI talks to the mail server over HTTP; no mail code runs here.
+import { app, BrowserWindow, net, protocol, shell } from "electron";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { ConfigStore, MailService, type SecretCipher } from "@mail-app/core";
-import { startServer } from "@mail-app/server";
+import { extname, join, normalize } from "node:path";
+import { pathToFileURL } from "node:url";
 
-// In dev the app path is apps/desktop; the shared .env lives at the repo root.
-const envFile = join(app.getAppPath(), "../../.env");
-if (existsSync(envFile)) process.loadEnvFile(envFile);
+// Dev: the Expo web dev server (npm run web). Packaged: the exported build in out/web.
+const devUrl = process.env.MAIL_UI_URL ?? (app.isPackaged ? undefined : "http://localhost:8081");
+const webRoot = join(import.meta.dirname, "../web");
 
-const port = Number(process.env.MAIL_APP_PORT) || 8787;
-const token = process.env.MAIL_APP_TOKEN ?? "";
+// A standard scheme gives the UI a stable origin, so its saved settings persist.
+// Not "secure": the UI must be able to call an http:// server on your network.
+protocol.registerSchemesAsPrivileged([
+  { scheme: "app", privileges: { standard: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 
-function createWindow(): void {
+function serveExportedUi(): void {
+  protocol.handle("app", (request) => {
+    const path = normalize(decodeURIComponent(new URL(request.url).pathname)).replace(/^([/\\])+/, "");
+    const file = join(webRoot, path);
+    // Unknown paths are app routes (single-page app): serve index.html.
+    const target = file.startsWith(webRoot) && extname(file) && existsSync(file) ? file : join(webRoot, "index.html");
+    return net.fetch(pathToFileURL(target).toString());
+  });
+}
+
+async function waitFor(url: string): Promise<void> {
+  for (let i = 0; i < 120; i++) {
+    try {
+      await fetch(url);
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+}
+
+async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: 1320,
+    height: 840,
+    minWidth: 760,
+    minHeight: 520,
     title: "Mail",
+    backgroundColor: "#ffffff",
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
 
   // Links in emails open in the default browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) void shell.openExternal(url);
+    if (/^https?:|^mailto:/.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("app://") && !(devUrl && url.startsWith(devUrl))) {
+      event.preventDefault();
+      if (/^https?:|^mailto:/.test(url)) void shell.openExternal(url);
+    }
+  });
 
-  // The renderer only gets the local API address and token, never the real secrets.
-  const query = { api: `http://127.0.0.1:${port}`, token };
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${new URLSearchParams(query)}`);
+  if (devUrl) {
+    await waitFor(devUrl);
+    await win.loadURL(devUrl);
   } else {
-    void win.loadFile(join(import.meta.dirname, "../renderer/index.html"), { query });
+    await win.loadURL("app://mail/");
   }
 }
 
 app.whenReady().then(() => {
-  if (!token) {
-    dialog.showErrorBox("Missing configuration", `Set MAIL_APP_TOKEN in ${envFile} (see .env.example).`);
-    app.quit();
-    return;
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    dialog.showErrorBox("Keychain unavailable", "Mail needs the system keychain to store passwords safely.");
-    app.quit();
-    return;
-  }
-
-  // Passwords, Google tokens and AI keys are encrypted with the macOS Keychain.
-  const cipher: SecretCipher = {
-    encrypt: (plain) => safeStorage.encryptString(plain).toString("base64"),
-    decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, "base64")),
-  };
-  const store = new ConfigStore(join(app.getPath("userData"), "config.json"), cipher);
-  const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env;
-  const mail = new MailService({ store, google: clientId && clientSecret ? { clientId, clientSecret } : undefined });
-
-  // Listen on all interfaces so the phone app can reach it over Wi-Fi.
-  startServer({
-    port,
-    host: process.env.MAIL_APP_HOST || "0.0.0.0",
-    token,
-    mail,
-    store,
-    openUrl: (url) => shell.openExternal(url),
-  });
-  createWindow();
+  if (!devUrl) serveExportedUi();
+  void createWindow();
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
 });
 

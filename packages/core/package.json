@@ -5,24 +5,21 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./presets": "./src/presets.ts"
+    "./presets": "./src/presets.ts",
+    "./types": "./src/types.ts"
   },
   "scripts": {
-    "demo": "tsx src/demo.ts",
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.4.0",
     "imapflow": "^2.10.0",
     "mailparser": "^3.14.1",
-    "nodemailer": "^10.3.1",
-    "zod": "^4.6.7"
+    "nodemailer": "^10.3.1"
   },
   "devDependencies": {
     "@types/mailparser": "*",
     "@types/node": "^26.6.6",
     "@types/nodemailer": "*",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

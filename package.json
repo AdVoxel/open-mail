@@ -4,12 +4,20 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "server"
   ],
   "scripts": {
-    "desktop": "npm run dev -w @mail-app/desktop",
-    "mobile": "npm run start -w @mail-app/mobile",
     "server": "npm run start -w @mail-app/server",
+    "server:dev": "npm run dev -w @mail-app/server",
+    "web": "npm run web -w @mail-app/mobile",
+    "mobile": "npm run start -w @mail-app/mobile",
+    "desktop": "npm run dev -w @mail-app/desktop",
+    "desktop:build": "npm run build -w @mail-app/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "overrides": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   }
 }

@@ -1,35 +1,33 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import {
-  ConfigStore,
-  DEFAULT_DRAFT_ROUTE,
-  DEFAULT_TRIAGE_ROUTE,
-  draftReply,
-  MailService,
-  RefusalError,
-  triageEmail,
-  type AiJob,
-  type AiSettings,
-  type MailMessage,
-  type Triage,
-} from "@mail-app/core";
+import { describe, MailError, type AccountInfo, type MailService, type Scheduler } from "@mail-app/core";
 
 export interface ServerOptions {
   port: number;
   host: string;
   token: string;
-  mail?: MailService;
-  /** Present in the desktop app: enables AI settings stored with encrypted keys. */
-  store?: ConfigStore;
-  /** Opens a URL in the user's browser; enables "Sign in with Google". */
-  openUrl?: (url: string) => Promise<void> | void;
+  mail: MailService;
+  scheduler: Scheduler;
+  version?: string;
 }
 
 class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
   }
+}
+
+/** A handler may return this to send raw bytes (attachments) instead of JSON. */
+class FileResponse {
+  constructor(
+    public filename: string,
+    public contentType: string,
+    public content: Buffer,
+  ) {}
 }
 
 const HostSchema = z.object({
@@ -40,88 +38,102 @@ const HostSchema = z.object({
 
 const AccountInputSchema = z.object({
   label: z.string().optional(),
+  name: z.string().optional(),
   address: z.string().trim().min(3),
   user: z.string().optional(),
   password: z.string().min(1),
   imap: HostSchema,
   smtp: HostSchema,
+  saveSentCopy: z.boolean().optional(),
 });
 
-const AiUpdateSchema = z.object({
-  route: z.object({
-    provider: z.enum(["anthropic", "openai-compatible"]),
-    model: z.string().trim().min(1),
-    baseUrl: z.url().optional(),
-  }),
-  apiKey: z.string().nullable().optional(), // undefined keeps, null/"" clears
+const AccountUpdateSchema = z.object({
+  label: z.string().trim().min(1).optional(),
+  name: z.string().trim().optional(),
+  saveSentCopy: z.boolean().optional(),
 });
 
-const SendSchema = z.object({
-  to: z.string().min(1),
+const MailSchema = z.object({
+  to: z.string().trim().min(1, "Add at least one recipient"),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
   subject: z.string(),
-  body: z.string().min(1),
+  text: z.string(),
+  html: z.string().optional(),
   inReplyTo: z.string().optional(),
   references: z.array(z.string()).optional(),
+  attachments: z
+    .array(z.object({ filename: z.string().min(1), contentType: z.string().optional(), content: z.base64() }))
+    .optional(),
+});
+
+const SendSchema = MailSchema.extend({
+  /** Optional ISO date. In the future = schedule it; otherwise send now. */
+  sendAt: z.iso.datetime({ offset: true }).optional(),
+});
+
+const ScheduleSchema = MailSchema.extend({
+  accountId: z.string().min(1),
+  sendAt: z.iso.datetime({ offset: true }),
+});
+
+const ScheduleUpdateSchema = MailSchema.partial().extend({
+  accountId: z.string().min(1).optional(),
+  sendAt: z.iso.datetime({ offset: true }).optional(),
+});
+
+const FlagsSchema = z.object({
+  seen: z.boolean().optional(),
+  flagged: z.boolean().optional(),
+  answered: z.boolean().optional(),
+});
+
+const MoveSchema = z.object({
+  /** A folder path, or "inbox" | "archive" | "trash" | "junk". */
+  to: z.string().min(1),
 });
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown> | unknown;
 
+interface GoogleSession {
+  status: "pending" | "done" | "error";
+  account?: AccountInfo;
+  error?: string;
+}
+
 /**
- * Local API used by both the desktop and mobile apps. Every request needs
- * `Authorization: Bearer <token>`; the AI keys and mail passwords never leave
- * this process.
+ * The mail API used by the desktop and mobile apps. Every request except
+ * /api/health needs `Authorization: Bearer <token>`; mail passwords never
+ * leave this process.
  */
-export function startServer({ port, host, token, store, openUrl, mail = new MailService({ store }) }: ServerOptions): Server {
+export function startServer({ port, host, token, mail, scheduler, version = "dev" }: ServerOptions): Server {
   if (!token) throw new Error("MAIL_APP_TOKEN is required");
   const expected = Buffer.from(`Bearer ${token}`);
-
-  // Each email is fetched and triaged at most once per run (until settings change).
-  const triageCache = new Map<string, Triage>();
-  const messageCache = new Map<string, MailMessage>();
-
-  function forgetAccount(accountId: string) {
-    for (const cache of [triageCache, messageCache]) {
-      for (const key of cache.keys()) if (key.startsWith(`${accountId}:`)) cache.delete(key);
-    }
-  }
-
-  function aiSettings(job: AiJob): AiSettings {
-    if (store) return store.aiRoute(job);
-    return { route: job === "triage" ? DEFAULT_TRIAGE_ROUTE : DEFAULT_DRAFT_ROUTE };
-  }
+  const googleSessions = new Map<string, GoogleSession>();
 
   function requireAccount(params: Params): string {
     if (!mail.hasAccount(params.id!)) throw new HttpError(404, `Account "${params.id}" is not configured`);
     return params.id!;
   }
 
-  function parseUid(params: Params): number {
+  function folderParam(url: URL): string {
+    return url.searchParams.get("folder") || "INBOX";
+  }
+
+  function uidParam(params: Params): number {
     const uid = Number(params.uid);
-    if (!Number.isInteger(uid)) throw new HttpError(400, "Invalid message uid");
+    if (!Number.isInteger(uid) || uid < 1) throw new HttpError(400, "Invalid message uid");
     return uid;
   }
 
-  async function loadMessage(accountId: string, uid: number): Promise<MailMessage> {
-    const key = `${accountId}:${uid}`;
-    let message = messageCache.get(key);
-    if (!message) {
-      message = await mail.getMessage(accountId, uid);
-      messageCache.set(key, message);
-    }
-    return message;
+  function intParam(url: URL, name: string, fallback: number, max: number): number {
+    const value = Number(url.searchParams.get(name));
+    return Number.isInteger(value) && value >= 0 ? Math.min(value, max) : fallback;
   }
 
   const routes: [method: string, pattern: string, handler: Handler][] = [
-    [
-      "GET",
-      "/api/capabilities",
-      () => ({
-        manageAccounts: mail.canManageAccounts,
-        googleSignIn: mail.canSignInWithGoogle && openUrl !== undefined,
-        editAiSettings: store !== undefined,
-      }),
-    ],
+    ["GET", "/api/capabilities", () => ({ version, manageAccounts: mail.canManageAccounts, googleSignIn: mail.canSignInWithGoogle })],
 
     // Accounts
     ["GET", "/api/accounts", () => mail.listAccounts()],
@@ -136,102 +148,168 @@ export function startServer({ port, host, token, store, openUrl, mail = new Mail
     ],
     ["POST", "/api/accounts", async (req) => mail.addAccount(parse(AccountInputSchema, await readJson(req)))],
     [
-      "POST",
-      "/api/accounts/google",
-      () => {
-        if (!openUrl) throw new HttpError(501, "Google sign-in is only available in the desktop app");
-        return mail.addGoogleAccount(openUrl);
-      },
+      "PATCH",
+      "/api/accounts/:id",
+      async (req, params) => mail.updateAccount(requireAccount(params), parse(AccountUpdateSchema, await readJson(req))),
     ],
     [
       "DELETE",
       "/api/accounts/:id",
-      (_req, params) => {
-        mail.removeAccount(requireAccount(params));
-        forgetAccount(params.id!);
+      async (_req, params) => {
+        await mail.removeAccount(requireAccount(params));
         return { ok: true };
       },
     ],
 
-    // AI settings (API keys are write-only: reads only say whether one is saved)
+    // Google sign-in: the app opens `url` in a browser, then polls the session.
+    [
+      "POST",
+      "/api/accounts/google",
+      async () => {
+        if (!mail.canSignInWithGoogle) throw new HttpError(501, "Google sign-in is not configured on the server");
+        const id = randomUUID();
+        const session: GoogleSession = { status: "pending" };
+        googleSessions.set(id, session);
+        const url = await new Promise<string>((resolve, reject) => {
+          mail
+            .addGoogleAccount((authUrl) => resolve(authUrl))
+            .then((account) => Object.assign(session, { status: "done", account }))
+            .catch((err: unknown) => {
+              Object.assign(session, { status: "error", error: describe(err) });
+              reject(err);
+            })
+            .finally(() => setTimeout(() => googleSessions.delete(id), 10 * 60_000).unref());
+        });
+        return { sessionId: id, url };
+      },
+    ],
     [
       "GET",
-      "/api/settings/ai",
-      () =>
-        Object.fromEntries(
-          (["triage", "draft"] as const).map((job) => {
-            const { route, apiKey } = aiSettings(job);
-            return [job, { route, hasApiKey: Boolean(apiKey) }];
-          }),
-        ),
-    ],
-    [
-      "PUT",
-      "/api/settings/ai/:job",
-      async (req, params) => {
-        if (!store) throw new HttpError(501, "AI settings can only be changed in the desktop app");
-        const job = params.job;
-        if (job !== "triage" && job !== "draft") throw new HttpError(404, "Unknown AI job");
-        const { route, apiKey } = parse(AiUpdateSchema, await readJson(req));
-        if (route.provider === "openai-compatible" && !route.baseUrl) {
-          throw new HttpError(400, "A base URL is required for OpenAI-compatible providers");
-        }
-        store.setAiRoute(job, route, apiKey === "" ? null : apiKey);
-        if (job === "triage") triageCache.clear();
-        return { ok: true };
+      "/api/accounts/google/:session",
+      (_req, params) => {
+        const session = googleSessions.get(params.session!);
+        if (!session) throw new HttpError(404, "Sign-in session not found or expired");
+        return session;
       },
     ],
 
-    // Mail
+    // Folders and messages
+    ["GET", "/api/accounts/:id/folders", (_req, params, url) => mail.listFolders(requireAccount(params), { fresh: url.searchParams.has("fresh") })],
+    [
+      "GET",
+      "/api/messages",
+      (_req, _params, url) => mail.listAllInboxes(intParam(url, "limit", 50, 200)),
+    ],
     [
       "GET",
       "/api/accounts/:id/messages",
-      (_req, params, url) => {
-        const limit = Math.min(Number(url.searchParams.get("limit")) || 30, 100);
-        return mail.listInbox(requireAccount(params), limit);
-      },
+      (_req, params, url) =>
+        mail.listMessages(requireAccount(params), {
+          folder: folderParam(url),
+          limit: intParam(url, "limit", 50, 200) || 50,
+          offset: intParam(url, "offset", 0, Number.MAX_SAFE_INTEGER),
+          query: url.searchParams.get("q") ?? undefined,
+        }),
     ],
-    ["GET", "/api/accounts/:id/messages/:uid", (_req, params) => loadMessage(requireAccount(params), parseUid(params))],
     [
       "GET",
-      "/api/accounts/:id/messages/:uid/triage",
-      async (_req, params) => {
-        const accountId = requireAccount(params);
-        const uid = parseUid(params);
-        const key = `${accountId}:${uid}`;
-        let triage = triageCache.get(key);
-        if (!triage) {
-          triage = await triageEmail(await loadMessage(accountId, uid), aiSettings("triage"));
-          triageCache.set(key, triage);
-        }
-        return triage;
+      "/api/accounts/:id/messages/:uid",
+      (_req, params, url) => mail.getMessage(requireAccount(params), folderParam(url), uidParam(params)),
+    ],
+    [
+      "GET",
+      "/api/accounts/:id/messages/:uid/attachments/:index",
+      async (_req, params, url) => {
+        const index = Number(params.index);
+        if (!Number.isInteger(index) || index < 0) throw new HttpError(400, "Invalid attachment index");
+        const file = await mail.getAttachment(requireAccount(params), folderParam(url), uidParam(params), index);
+        return new FileResponse(file.filename, file.contentType, file.content);
+      },
+    ],
+    [
+      "PATCH",
+      "/api/accounts/:id/messages/:uid",
+      async (req, params, url) => {
+        await mail.setFlags(requireAccount(params), folderParam(url), uidParam(params), parse(FlagsSchema, await readJson(req)));
+        return { ok: true };
       },
     ],
     [
       "POST",
-      "/api/accounts/:id/messages/:uid/draft",
-      async (req, params) => {
-        const message = await loadMessage(requireAccount(params), parseUid(params));
-        const { instructions } = parse(z.object({ instructions: z.string().optional() }), await readJson(req));
-        return { draft: await draftReply(message, instructions, aiSettings("draft")) };
+      "/api/accounts/:id/messages/:uid/move",
+      async (req, params, url) => {
+        const { to } = parse(MoveSchema, await readJson(req));
+        return mail.moveMessage(requireAccount(params), folderParam(url), uidParam(params), to);
       },
     ],
+    [
+      "DELETE",
+      "/api/accounts/:id/messages/:uid",
+      (_req, params, url) => mail.deleteMessage(requireAccount(params), folderParam(url), uidParam(params)),
+    ],
+
+    // Sending
     [
       "POST",
       "/api/accounts/:id/send",
       async (req, params) => {
-        await mail.send({ accountId: requireAccount(params), ...parse(SendSchema, await readJson(req)) });
+        const accountId = requireAccount(params);
+        const { sendAt, ...outgoing } = parse(SendSchema, await readJson(req));
+        if (sendAt && Date.parse(sendAt) > Date.now() + 5_000) {
+          return { scheduled: scheduler.create(accountId, outgoing, new Date(sendAt)) };
+        }
+        return { sent: await mail.send(accountId, outgoing) };
+      },
+    ],
+
+    // Scheduled mail
+    ["GET", "/api/scheduled", () => scheduler.list()],
+    [
+      "POST",
+      "/api/scheduled",
+      async (req) => {
+        const { accountId, sendAt, ...outgoing } = parse(ScheduleSchema, await readJson(req));
+        if (Date.parse(sendAt) <= Date.now()) throw new HttpError(400, "sendAt must be in the future");
+        return scheduler.create(accountId, outgoing, new Date(sendAt));
+      },
+    ],
+    ["GET", "/api/scheduled/:sid", (_req, params) => scheduler.get(params.sid!)],
+    [
+      "PATCH",
+      "/api/scheduled/:sid",
+      async (req, params) => {
+        const { sendAt, ...update } = parse(ScheduleUpdateSchema, await readJson(req));
+        if (sendAt && Date.parse(sendAt) <= Date.now()) throw new HttpError(400, "sendAt must be in the future");
+        return scheduler.update(params.sid!, { ...update, sendAt: sendAt ? new Date(sendAt) : undefined });
+      },
+    ],
+    ["POST", "/api/scheduled/:sid/send", (_req, params) => scheduler.sendNow(params.sid!)],
+    [
+      "DELETE",
+      "/api/scheduled/:sid",
+      (_req, params) => {
+        scheduler.remove(params.sid!);
         return { ok: true };
       },
     ],
   ];
 
   const server = createServer(async (req, res) => {
-    // The Electron renderer is served from another origin in dev; the token is the real gate.
+    const started = Date.now();
+    res.on("finish", () => {
+      if (req.method !== "OPTIONS") console.log(`${req.method} ${req.url} ${res.statusCode} ${Date.now() - started}ms`);
+    });
+    // The apps run on other origins (Expo web, Electron); the token is the real gate.
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
     if (req.method === "OPTIONS") return send(res, 204);
+
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (req.method === "GET" && url.pathname === "/api/health") {
+      return send(res, 200, { ok: true, version, time: new Date().toISOString() });
+    }
 
     const auth = Buffer.from(req.headers.authorization ?? "");
     if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) {
@@ -239,17 +317,21 @@ export function startServer({ port, host, token, store, openUrl, mail = new Mail
     }
 
     try {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      let pathMatched = false;
       for (const [method, pattern, handler] of routes) {
-        const params = method === req.method ? matchPath(pattern, url.pathname) : null;
-        if (params) return send(res, 200, await handler(req, params, url));
+        const params = matchPath(pattern, url.pathname);
+        if (!params) continue;
+        pathMatched = true;
+        if (method !== req.method) continue;
+        const result = await handler(req, params, url);
+        if (result instanceof FileResponse) return sendFile(res, result);
+        return send(res, 200, result);
       }
-      send(res, 404, { error: "Not found" });
+      send(res, pathMatched ? 405 : 404, { error: pathMatched ? "Method not allowed" : "Not found" });
     } catch (err) {
-      if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      if (err instanceof RefusalError) return send(res, 422, { error: err.message });
+      if (err instanceof HttpError || err instanceof MailError) return send(res, err.status, { error: err.message });
       console.error(err);
-      send(res, 500, { error: err instanceof Error ? err.message : "Internal error" });
+      send(res, 500, { error: describe(err) });
     }
   });
 
@@ -280,11 +362,20 @@ function send(res: ServerResponse, status: number, body?: unknown): void {
   res.end(body === undefined ? undefined : JSON.stringify(body));
 }
 
+function sendFile(res: ServerResponse, file: FileResponse): void {
+  res.writeHead(200, {
+    "Content-Type": file.contentType || "application/octet-stream",
+    "Content-Length": file.content.length,
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+  });
+  res.end(file.content);
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 1_000_000) throw new HttpError(413, "Body too large");
+    if (raw.length > 35_000_000) throw new HttpError(413, "Body too large");
   }
   try {
     return raw ? JSON.parse(raw) : {};

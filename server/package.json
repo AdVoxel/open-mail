@@ -3,11 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": "./src/server.ts"
-  },
   "scripts": {
     "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

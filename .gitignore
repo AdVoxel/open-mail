@@ -13,3 +13,7 @@ build/
 *.log
 .DS_Store
 .claude/
+
+# Server data (accounts, encryption key, scheduled mail)
+server/data/
+apps/desktop/release/

@@ -1,46 +1,67 @@
+import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
-import {
-  DEFAULT_DRAFT_ROUTE,
-  DEFAULT_TRIAGE_ROUTE,
-  type AiRoute,
-  type HostConfig,
-} from "./presets.js";
+import type { HostConfig } from "./presets.js";
+import type { AccountUpdate, AuthType } from "./types.js";
 
-/** Encrypts secrets at rest. The desktop app backs this with the macOS Keychain. */
+/** Encrypts secrets at rest. */
 export interface SecretCipher {
   encrypt(plain: string): string;
   decrypt(encrypted: string): string;
 }
 
-export type AuthType = "password" | "google";
+/**
+ * AES-256-GCM with a 32-byte key. On the server the key comes from
+ * MAIL_APP_SECRET_KEY or a key file next to the data (see loadOrCreateKey).
+ */
+export function aesCipher(key: Buffer): SecretCipher {
+  if (key.length !== 32) throw new Error("The secret key must be 32 bytes");
+  return {
+    encrypt(plain) {
+      const iv = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const data = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+      return `v1:${Buffer.concat([iv, cipher.getAuthTag(), data]).toString("base64")}`;
+    },
+    decrypt(encrypted) {
+      if (!encrypted.startsWith("v1:")) throw new Error("Unknown secret format");
+      const raw = Buffer.from(encrypted.slice(3), "base64");
+      const decipher = createDecipheriv("aes-256-gcm", key, raw.subarray(0, 12));
+      decipher.setAuthTag(raw.subarray(12, 28));
+      return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8");
+    },
+  };
+}
+
+/** Reads a base64 key file, creating one (mode 600) on first run. */
+export function loadOrCreateKey(path: string): Buffer {
+  if (existsSync(path)) return Buffer.from(readFileSync(path, "utf8").trim(), "base64");
+  const key = randomBytes(32);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, key.toString("base64"), { mode: 0o600 });
+  return key;
+}
 
 export interface StoredAccount {
   id: string;
   label: string;
+  name?: string;
   address: string;
   imap: HostConfig;
   smtp: HostConfig;
+  saveSentCopy?: boolean;
   /** `secret` is the encrypted app password or Google refresh token. */
   auth: { type: AuthType; user: string; secret: string };
 }
 
 export type NewAccount = Omit<StoredAccount, "id">; // with `auth.secret` in plain text
 
-export type AiJob = "triage" | "draft";
-
-interface StoredAiRoute extends AiRoute {
-  apiKey?: string; // encrypted
-}
-
 interface ConfigFile {
-  version: 1;
+  version: 2;
   accounts: StoredAccount[];
-  ai: Record<AiJob, StoredAiRoute>;
 }
 
-/** Accounts and AI settings added in the app, saved as JSON with secrets encrypted. */
+/** Accounts added through the API, saved as JSON with secrets encrypted. */
 export class ConfigStore {
   private data: ConfigFile;
 
@@ -48,9 +69,8 @@ export class ConfigStore {
     private path: string,
     private cipher: SecretCipher,
   ) {
-    this.data = existsSync(path)
-      ? (JSON.parse(readFileSync(path, "utf8")) as ConfigFile)
-      : { version: 1, accounts: [], ai: { triage: DEFAULT_TRIAGE_ROUTE, draft: DEFAULT_DRAFT_ROUTE } };
+    const raw = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Partial<ConfigFile>) : {};
+    this.data = { version: 2, accounts: raw.accounts ?? [] };
   }
 
   accounts(): StoredAccount[] {
@@ -68,6 +88,15 @@ export class ConfigStore {
     return stored;
   }
 
+  updateAccount(id: string, update: AccountUpdate): void {
+    const account = this.data.accounts.find((a) => a.id === id);
+    if (!account) throw new Error(`Account "${id}" not found`);
+    if (update.label !== undefined) account.label = update.label;
+    if (update.name !== undefined) account.name = update.name;
+    if (update.saveSentCopy !== undefined) account.saveSentCopy = update.saveSentCopy;
+    this.save();
+  }
+
   removeAccount(id: string): void {
     this.data.accounts = this.data.accounts.filter((a) => a.id !== id);
     this.save();
@@ -77,23 +106,14 @@ export class ConfigStore {
     return this.cipher.decrypt(account.auth.secret);
   }
 
-  aiRoute(job: AiJob): { route: AiRoute; apiKey?: string } {
-    const { apiKey, ...route } = this.data.ai[job];
-    return { route, apiKey: apiKey ? this.cipher.decrypt(apiKey) : undefined };
-  }
-
-  /** `apiKey`: undefined keeps the saved key, null removes it. */
-  setAiRoute(job: AiJob, route: AiRoute, apiKey: string | null | undefined): void {
-    const previous = this.data.ai[job].apiKey;
-    const encrypted = apiKey === undefined ? previous : apiKey ? this.cipher.encrypt(apiKey) : undefined;
-    this.data.ai[job] = { ...route, ...(encrypted ? { apiKey: encrypted } : {}) };
-    this.save();
-  }
-
   private save(): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.path);
+    writeJsonAtomic(this.path, this.data);
   }
+}
+
+export function writeJsonAtomic(path: string, data: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  renameSync(tmp, path);
 }
