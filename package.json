@@ -1,0 +1,15 @@
+{
+  "name": "mail-app",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "desktop": "npm run dev -w @mail-app/desktop",
+    "mobile": "npm run start -w @mail-app/mobile",
+    "server": "npm run start -w @mail-app/server",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

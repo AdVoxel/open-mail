@@ -1,0 +1,15 @@
+# Dependencies (any level)
+node_modules/
+
+# Build output
+out/
+dist/
+build/
+.expo/
+
+# Env / local
+.env
+.env.local
+*.log
+.DS_Store
+.claude/
