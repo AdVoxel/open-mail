@@ -9,6 +9,7 @@
     "build": "npm run export:web -w @mail-app/mobile && electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json",
+    "dist:mac": "npm run build && electron-builder --mac dmg --arm64",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:linux": "npm run build && electron-builder --linux AppImage deb --x64"
   },
@@ -34,6 +35,13 @@
       "package.json"
     ],
     "npmRebuild": false,
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "icon": "../mobile/assets/icon.png",
+      "identity": "-",
+      "artifactName": "Mail-${version}-${arch}.${ext}"
+    },
     "win": {
       "target": "nsis"
     },
