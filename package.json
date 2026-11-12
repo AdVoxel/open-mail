@@ -8,13 +8,15 @@
     "server"
   ],
   "scripts": {
+    "setup": "bash scripts/setup-env.sh",
     "server": "npm run start -w @mail-app/server",
     "server:dev": "npm run dev -w @mail-app/server",
     "web": "npm run web -w @mail-app/mobile",
     "mobile": "npm run start -w @mail-app/mobile",
     "desktop": "npm run dev -w @mail-app/desktop",
     "desktop:build": "npm run build -w @mail-app/desktop",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "deploy:web": "bash scripts/deploy-web.sh"
   },
   "overrides": {
     "react": "19.3.0",

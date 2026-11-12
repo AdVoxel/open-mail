@@ -1,6 +1,13 @@
 export * from "./types.js";
 export * from "./presets.js";
-export { aesCipher, ConfigStore, loadOrCreateKey, type SecretCipher } from "./config.js";
-export type { GoogleClient } from "./google-oauth.js";
+export { aesCipher, ConfigStore, type SecretCipher } from "./config.js";
+export { checkGoogleClient, type GoogleClient, type GoogleClientSource } from "./google-oauth.js";
 export { MailError, MailService, describe, type ListOptions } from "./mail.js";
 export { Scheduler, type ScheduleUpdate, type SchedulerOptions } from "./scheduler.js";
+export { applySignature, draftToHtml, hasQuote, signatureText, stripQuote } from "./signature.js";
+export { LabelStore, labelKeyword, labelsFromFlags } from "./labels.js";
+export { NewMailWatcher } from "./watcher.js";
+export { CalendarService } from "./calendar.js";
+export { LockService } from "./lock.js";
+export { EventReminders } from "./reminders.js";
+export { TRACKING_GIF, TrackingStore } from "./tracking.js";

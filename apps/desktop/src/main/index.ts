@@ -67,6 +67,9 @@ async function createWindow(): Promise<void> {
   }
 }
 
+// Windows shows notifications only for an app with an id (the same as the installer's appId).
+app.setAppUserModelId("com.openmail.desktop");
+
 app.whenReady().then(() => {
   if (!devUrl) serveExportedUi();
   void createWindow();

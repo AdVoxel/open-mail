@@ -4,7 +4,7 @@ import { Server } from "lucide-react-native";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Heading } from "@/components/ui/heading";
 import { Text } from "@/components/ui/text";
-import { useConnection } from "@/src/lib/connection";
+import { defaultServerUrl, useConnection } from "@/src/lib/connection";
 import { useColors } from "@/src/lib/theme";
 
 const inputClass = "h-11 rounded-lg border border-border bg-background px-3 text-[15px] text-foreground font-sans web:outline-none";
@@ -47,7 +47,7 @@ export function ServerForm({ compact = false }: { compact?: boolean }) {
         <TextInput
           value={url}
           onChangeText={setUrl}
-          placeholder="http://localhost:8787"
+          placeholder={defaultServerUrl() || "http://localhost:8787"}
           placeholderTextColor={colors.muted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -62,7 +62,7 @@ export function ServerForm({ compact = false }: { compact?: boolean }) {
         <TextInput
           value={token}
           onChangeText={setToken}
-          placeholder="MAIL_APP_TOKEN from the server's .env"
+          placeholder="The server's MAIL_APP_TOKEN"
           placeholderTextColor={colors.muted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -104,7 +104,7 @@ export function ConnectScreen() {
             </Heading>
             <Text className="text-muted-foreground">
               The app talks to your own server, which talks to Gmail, iCloud and Zoho. Start it with{" "}
-              <Text className="font-mono text-sm">npm run server</Text> and use the token from its <Text className="font-mono text-sm">.env</Text>.
+              <Text className="font-mono text-sm">npm run server</Text> and use the value of its <Text className="font-mono text-sm">MAIL_APP_TOKEN</Text> environment variable.
             </Text>
           </View>
           {status === "offline" && error ? (

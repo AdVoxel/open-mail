@@ -19,17 +19,25 @@ interface ConnectionState {
   /** Test a server and save it on success. Throws the connection error. */
   connect: (connection: ServerConnection) => Promise<void>;
   retry: () => void;
+  /** Reads the server's capabilities again (after a setting changed them), without reconnecting. */
+  refreshCapabilities: () => Promise<void>;
 }
 
 const STORAGE_KEY = "mail.connection";
 const Context = createContext<ConnectionState | null>(null);
 
-// From .env.local (see .env.example). On web the server usually runs on the same machine.
+/** Production server. Development builds talk to a server on this machine instead. */
+export const PRODUCTION_SERVER_URL = "https://apimail.advoxel.com";
+const DEVELOPMENT_SERVER_URL = "http://localhost:8787";
+
+/** The address offered before one is saved. The token is never bundled: it is entered on the Connect screen. */
+export function defaultServerUrl(): string {
+  if (!__DEV__) return PRODUCTION_SERVER_URL;
+  return Platform.OS === "web" ? DEVELOPMENT_SERVER_URL : "";
+}
+
 function defaultConnection(): ServerConnection {
-  return {
-    url: process.env.EXPO_PUBLIC_MAIL_API_URL || (Platform.OS === "web" ? "http://localhost:8787" : ""),
-    token: process.env.EXPO_PUBLIC_MAIL_APP_TOKEN ?? "",
-  };
+  return { url: defaultServerUrl(), token: "" };
 }
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
@@ -81,9 +89,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
+  const refreshCapabilities = useCallback(async () => {
+    if (api) setCapabilities(await api.capabilities());
+  }, [api]);
+
   const value = useMemo(
-    () => ({ status, connection, api, capabilities, error, connect, retry }),
-    [status, connection, api, capabilities, error, connect, retry],
+    () => ({ status, connection, api, capabilities, error, connect, retry, refreshCapabilities }),
+    [status, connection, api, capabilities, error, connect, retry, refreshCapabilities],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

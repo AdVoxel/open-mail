@@ -1,73 +1,100 @@
 import { useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, TextInput, View } from "react-native";
 import { router } from "expo-router";
-import { ArrowLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react-native";
-import { MAIL_PRESETS, type AccountInfo, type AccountInput, type HostConfig } from "@mail-app/api-client";
+import { ArrowLeft, Check, ChevronDown, ChevronUp, Trash2 } from "lucide-react-native";
+import {
+  ACCOUNT_COLORS,
+  MAIL_PRESETS,
+  type AccountInfo,
+  type AccountInput,
+  type HostConfig,
+  type MailLabel,
+} from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { ServerForm } from "@/src/components/ConnectScreen";
-import { Card, Header, IconButton, Initials, SectionTitle, Segmented, useConfirm, useNotify } from "@/src/components/kit";
+import { SignaturePreview } from "@/src/components/SignaturePreview";
+import { AccountCalendarSettings } from "@/src/components/CalendarSetup";
+import {
+  Card,
+  Header,
+  IconButton,
+  Initials,
+  LabelChip,
+  LabeledInput,
+  SectionTitle,
+  Segmented,
+  ToggleRow,
+  useConfirm,
+  useNotify,
+} from "@/src/components/kit";
 import { useApi, useConnection } from "@/src/lib/connection";
 import { useIsWide } from "@/src/lib/format";
 import { useMail } from "@/src/lib/mail";
+import { AUTO_LOCK_OPTIONS, useLock, type AutoLock } from "@/src/lib/lock";
+import { useNotifications } from "@/src/lib/notifications";
+import { SEND_DELAYS, useSendDelay, type SendDelay } from "@/src/lib/sendDelay";
+import { useAutoDrafts, useTrackOpens } from "@/src/lib/composePrefs";
 import { useColors, useThemeMode } from "@/src/lib/theme";
 
 const inputClass = "h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground font-sans web:outline-none";
 
-function LabeledInput({
-  label,
-  value,
-  onChange,
-  placeholder,
-  secure,
-  keyboardType,
-  className = "",
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  secure?: boolean;
-  keyboardType?: "email-address" | "number-pad";
-  className?: string;
-}) {
-  const colors = useColors();
+function ColorPicker({ value, onChange }: { value: string; onChange: (color: string) => void }) {
   return (
-    <View className={`gap-1.5 ${className}`}>
+    <View className="gap-1.5">
       <Text size="sm" className="font-medium">
-        {label}
+        Color
       </Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={colors.muted}
-        secureTextEntry={secure}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType={keyboardType}
-        className={inputClass}
-      />
+      <View className="flex-row flex-wrap gap-2">
+        {ACCOUNT_COLORS.map((color) => (
+          <Pressable
+            key={color}
+            onPress={() => onChange(color)}
+            accessibilityLabel={`Color ${color}`}
+            style={{ backgroundColor: color }}
+            className={`h-8 w-8 items-center justify-center rounded-full ${value === color ? "border-2 border-foreground" : ""}`}
+          >
+            {value === color ? <Check size={16} color="#ffffff" strokeWidth={3} /> : null}
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 }
 
-function ToggleRow({ label, hint, value, onChange }: { label: string; hint?: string; value: boolean; onChange: (v: boolean) => void }) {
+function SignatureEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
+  const colors = useColors();
   return (
-    <View className="flex-row items-center gap-3">
-      <View className="flex-1">
-        <Text size="sm" className="font-medium">
-          {label}
-        </Text>
-        {hint ? (
+    <View className="gap-1.5">
+      <Text size="sm" className="font-medium">
+        Signature (HTML)
+      </Text>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        multiline
+        placeholder={'<p><b>Your name</b><br>Your title · <a href="https://example.com">example.com</a></p>'}
+        placeholderTextColor={colors.muted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        spellCheck={false}
+        textAlignVertical="top"
+        className="min-h-[110px] rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground web:outline-none"
+      />
+      {value.trim() ? (
+        <View className="gap-1">
           <Text size="xs" className="text-muted-foreground">
-            {hint}
+            Preview
           </Text>
-        ) : null}
-      </View>
-      <Switch value={value} onValueChange={onChange} size="sm" />
+          <SignaturePreview html={value} />
+        </View>
+      ) : (
+        <Text size="xs" className="text-muted-foreground">
+          Added below what you write, above quoted replies. You can turn it off for a single message when composing.
+        </Text>
+      )}
     </View>
   );
 }
@@ -85,6 +112,8 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
   const { reloadAccounts } = useMail();
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState(account.label);
+  const [color, setColor] = useState(account.color);
+  const [signature, setSignature] = useState(account.signature);
   const [name, setName] = useState(account.name);
   const [saveSentCopy, setSaveSentCopy] = useState(account.saveSentCopy);
   const [busy, setBusy] = useState(false);
@@ -93,7 +122,7 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
   async function save() {
     setBusy(true);
     try {
-      await api.updateAccount(account.id, { label: label.trim() || account.address, name: name.trim(), saveSentCopy });
+      await api.updateAccount(account.id, { label: label.trim() || account.address, color, signature: signature.trim(), name: name.trim(), saveSentCopy });
       await reloadAccounts();
       notify("Account updated");
       setOpen(false);
@@ -124,14 +153,14 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
   return (
     <View className={last ? "" : "border-b border-border/70"}>
       <Pressable onPress={() => editable && setOpen((o) => !o)} className="flex-row items-center gap-3 px-4 py-3 data-[hover=true]:bg-accent/50">
-        <Initials name={account.label} size={36} />
+        <Initials name={account.label} size={36} color={account.color} />
         <View className="min-w-0 flex-1">
           <Text numberOfLines={1} className="font-medium">
             {account.label}
           </Text>
           <Text size="sm" numberOfLines={1} className="text-muted-foreground">
             {account.address} · {providerName(account)}
-            {account.source === "env" ? " · from .env" : ""}
+            {account.source === "env" ? " · from environment" : ""}
           </Text>
         </View>
         {editable ? <IconButton icon={open ? ChevronUp : ChevronDown} label="Edit" onPress={() => setOpen((o) => !o)} /> : null}
@@ -143,6 +172,9 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
             <LabeledInput label="Label" value={label} onChange={setLabel} className="min-w-[200px] flex-1" />
             <LabeledInput label="Sender name" value={name} onChange={setName} placeholder="Shown in the From field" className="min-w-[200px] flex-1" />
           </View>
+          <ColorPicker value={color} onChange={setColor} />
+          <SignatureEditor value={signature} onChange={setSignature} />
+          <AccountCalendarSettings account={account} />
           <ToggleRow
             label="Save a copy in Sent"
             hint="Turn on if sent mail doesn't appear in this account's Sent folder (needed for iCloud)."
@@ -328,11 +360,349 @@ function AddAccount() {
   );
 }
 
+// ----------------------------------------------------------- screen lock
+
+function ScreenLockSection() {
+  const api = useApi();
+  const notify = useNotify();
+  const colors = useColors();
+  const lock = useLock();
+  const [current, setCurrent] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [mode, setMode] = useState<"idle" | "change" | "off">("idle");
+  const [busy, setBusy] = useState(false);
+  const field = "h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground font-sans web:outline-none";
+
+  const reset = () => {
+    setCurrent("");
+    setPassword("");
+    setConfirm("");
+    setMode("idle");
+  };
+  const run = async (action: () => Promise<void>, done: string) => {
+    setBusy(true);
+    try {
+      await action();
+      notify(done);
+      reset();
+    } catch (e) {
+      notify("Couldn't save", (e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const setNew = (withCurrent: boolean) =>
+    run(async () => {
+      if (password !== confirm) throw new Error("The passwords don't match");
+      await api.setLockPassword(password, withCurrent ? current : undefined);
+      lock.setEnabled(true);
+    }, withCurrent ? "Password changed" : "Screen lock on");
+
+  const newPasswordFields = (
+    <>
+      <TextInput value={password} onChangeText={setPassword} secureTextEntry placeholder="New password (4+ characters)" placeholderTextColor={colors.muted} className={field} />
+      <TextInput value={confirm} onChangeText={setConfirm} secureTextEntry placeholder="New password again" placeholderTextColor={colors.muted} className={field} />
+    </>
+  );
+
+  if (!lock.enabled) {
+    return (
+      <Card className="gap-3 p-4">
+        <Text size="xs" className="text-muted-foreground">
+          Locks the app with a password, on every device. If you forget it, a code is emailed to one of your accounts. It hides your mail on screen; it doesn't encrypt it.
+        </Text>
+        {newPasswordFields}
+        <View className="items-start">
+          <Button size="sm" className="rounded-lg" disabled={busy || password.length < 4} onPress={() => void setNew(false)}>
+            <ButtonText>Turn on screen lock</ButtonText>
+          </Button>
+        </View>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="gap-3 p-4">
+      <View className="flex-row flex-wrap items-center gap-3">
+        <Text size="sm" className="flex-1 font-medium">
+          Screen lock is on
+        </Text>
+        <Button size="sm" variant="outline" className="rounded-lg" onPress={lock.lock}>
+          <ButtonText>Lock now</ButtonText>
+        </Button>
+      </View>
+      <View className="gap-1.5">
+        <Text size="sm" className="font-medium">
+          Lock after
+        </Text>
+        <View className="items-start">
+          <Segmented
+            value={String(lock.autoLock)}
+            onChange={(v) => lock.setAutoLock(Number(v) as AutoLock)}
+            options={AUTO_LOCK_OPTIONS.map((m) => ({ value: String(m), label: m === 0 ? "Never" : `${m} min` }))}
+          />
+        </View>
+        <Text size="xs" className="text-muted-foreground">
+          Without use on this device. The app also locks whenever it starts.
+        </Text>
+      </View>
+      {mode === "idle" ? (
+        <View className="flex-row gap-2">
+          <Button size="sm" variant="outline" className="rounded-lg" onPress={() => setMode("change")}>
+            <ButtonText>Change password</ButtonText>
+          </Button>
+          <Button size="sm" variant="ghost" className="rounded-lg" onPress={() => setMode("off")}>
+            <ButtonText>Turn off</ButtonText>
+          </Button>
+        </View>
+      ) : (
+        <View className="gap-2">
+          <TextInput value={current} onChangeText={setCurrent} secureTextEntry placeholder="Current password" placeholderTextColor={colors.muted} className={field} />
+          {mode === "change" ? newPasswordFields : null}
+          <View className="flex-row gap-2">
+            <Button
+              size="sm"
+              className="rounded-lg"
+              disabled={busy || !current || (mode === "change" && password.length < 4)}
+              onPress={() =>
+                void (mode === "change"
+                  ? setNew(true)
+                  : run(async () => {
+                      await api.disableLock(current);
+                      lock.setEnabled(false);
+                    }, "Screen lock off"))
+              }
+            >
+              <ButtonText>{mode === "change" ? "Change password" : "Turn off screen lock"}</ButtonText>
+            </Button>
+            <Button size="sm" variant="ghost" className="rounded-lg" onPress={reset}>
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+          </View>
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// --------------------------------------------------------------- sending
+
+function SendDelaySection() {
+  const [delay, setDelay] = useSendDelay();
+  const [autoDrafts, setAutoDrafts] = useAutoDrafts();
+  const [trackOpens, setTrackOpens] = useTrackOpens();
+  return (
+    <Card className="gap-3 p-4">
+      <ToggleRow
+        label="Save drafts automatically"
+        hint="What you write goes to the account's Drafts folder as you type, so closing the window or the app doesn't lose it."
+        value={autoDrafts}
+        onChange={setAutoDrafts}
+      />
+      <ToggleRow
+        label="Track opens"
+        hint="New messages get a tiny image that tells your server when it's loaded (change it per message in Compose). Needs the server online; approximate."
+        value={trackOpens}
+        onChange={setTrackOpens}
+      />
+      <View>
+        <Text size="sm" className="font-medium">
+          Delay sending
+        </Text>
+        <Text size="xs" className="text-muted-foreground">
+          Every message waits this long before it goes out, with an Undo button meanwhile. It still goes out if you close the app.
+        </Text>
+      </View>
+      <View className="items-start">
+        <Segmented
+          value={String(delay)}
+          onChange={(value) => setDelay(Number(value) as SendDelay)}
+          options={SEND_DELAYS.map((s) => ({ value: String(s), label: s === 0 ? "Off" : `${s} s` }))}
+        />
+      </View>
+    </Card>
+  );
+}
+
+// --------------------------------------------------------- notifications
+
+function NotificationsSection() {
+  const notify = useNotify();
+  const { supported, enabled, permission, setEnabled, test, eventAlerts, setEventAlerts } = useNotifications();
+  const alertsRow = (
+    <ToggleRow
+      label="Calendar alerts"
+      hint="When an event's alert is due: a notice in the app, and a system notification when those are on."
+      value={eventAlerts}
+      onChange={setEventAlerts}
+    />
+  );
+
+  if (!supported) {
+    return (
+      <Card className="p-4">
+        <Text size="sm" className="text-muted-foreground">
+          New-mail notifications work in the browser and the desktop app for now. Phones are coming later.
+        </Text>
+      </Card>
+    );
+  }
+
+  const hint =
+    permission === "denied"
+      ? "Blocked. Allow notifications for this app in your browser or system settings, then turn this on again."
+      : "A notification with the subject and the start of the message when mail arrives in an inbox.";
+
+  return (
+    <Card className="gap-3 p-4">
+      <ToggleRow
+        label="New mail notifications"
+        hint={hint}
+        value={enabled}
+        onChange={(on) =>
+          void setEnabled(on).then((result) => {
+            if (on && result === "denied") notify("Notifications are blocked", "Allow them in your browser or system settings.", "error");
+            if (on && result === "granted") test();
+          })
+        }
+      />
+      {enabled ? (
+        <View className="items-start">
+          <Button size="sm" variant="outline" className="rounded-lg" onPress={test}>
+            <ButtonText>Send a test notification</ButtonText>
+          </Button>
+        </View>
+      ) : null}
+      {alertsRow}
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------- labels
+
+function LabelForm({
+  initial,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: {
+  initial: Omit<MailLabel, "id">;
+  submitLabel: string;
+  onSubmit: (label: Omit<MailLabel, "id">) => Promise<void>;
+  onCancel?: () => void;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [color, setColor] = useState(initial.color);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    try {
+      await onSubmit({ name: name.trim(), color });
+      if (!onCancel) setName("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View className="gap-3">
+      <View className="flex-row flex-wrap items-end gap-3">
+        <LabeledInput label="Name" value={name} onChange={setName} placeholder="e.g. Invoices" className="min-w-[200px] flex-1" />
+        {name.trim() ? <LabelChip name={name.trim()} color={color} /> : null}
+      </View>
+      <ColorPicker value={color} onChange={setColor} />
+      <View className="flex-row gap-2">
+        <Button size="sm" className="rounded-lg" disabled={busy || !name.trim()} onPress={() => void submit()}>
+          <ButtonText>{submitLabel}</ButtonText>
+        </Button>
+        {onCancel ? (
+          <Button size="sm" variant="ghost" className="rounded-lg" onPress={onCancel}>
+            <ButtonText>Cancel</ButtonText>
+          </Button>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+function LabelsSection() {
+  const api = useApi();
+  const notify = useNotify();
+  const confirm = useConfirm();
+  const { labels, reloadLabels } = useMail();
+  const [editing, setEditing] = useState<string | null>(null);
+
+  const run = async (done: string, action: () => Promise<unknown>) => {
+    try {
+      await action();
+      await reloadLabels();
+      notify(done);
+      return true;
+    } catch (e) {
+      notify("Couldn't save the label", (e as Error).message, "error");
+      return false;
+    }
+  };
+
+  const remove = async (label: MailLabel) => {
+    const ok = await confirm({
+      title: `Delete “${label.name}”?`,
+      message: "The label disappears from every message. The messages themselves stay where they are.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (ok) await run("Label deleted", () => api.removeLabel(label.id));
+  };
+
+  return (
+    <Card>
+      {labels.map((label) => (
+        <View key={label.id} className="border-b border-border/70">
+          {editing === label.id ? (
+            <View className="p-4">
+              <LabelForm
+                initial={label}
+                submitLabel="Save"
+                onCancel={() => setEditing(null)}
+                onSubmit={async (update) => {
+                  if (await run("Label updated", () => api.updateLabel(label.id, update))) setEditing(null);
+                }}
+              />
+            </View>
+          ) : (
+            <Pressable onPress={() => setEditing(label.id)} className="flex-row items-center gap-3 px-4 py-3 data-[hover=true]:bg-accent/50">
+              <View className="flex-1 items-start">
+                <LabelChip name={label.name} color={label.color} />
+              </View>
+              <IconButton icon={ChevronDown} label="Edit" onPress={() => setEditing(label.id)} />
+              <IconButton icon={Trash2} label="Delete" onPress={() => void remove(label)} />
+            </Pressable>
+          )}
+        </View>
+      ))}
+      <View className="gap-2 p-4">
+        <Text size="sm" className="font-semibold">
+          New label
+        </Text>
+        <LabelForm
+          initial={{ name: "", color: ACCOUNT_COLORS[labels.length % ACCOUNT_COLORS.length]! }}
+          submitLabel="Add label"
+          onSubmit={async (label) => {
+            await run("Label added", () => api.addLabel(label));
+          }}
+        />
+      </View>
+    </Card>
+  );
+}
+
 // ---------------------------------------------------------------- screen
 
 export default function SettingsScreen() {
   const isWide = useIsWide();
-  const { accounts } = useMail();
+  const { accounts, groupConversations, setGroupConversations } = useMail();
   const { mode, setMode } = useThemeMode();
 
   return (
@@ -363,6 +733,28 @@ export default function SettingsScreen() {
         <Card className="p-4">
           <ServerForm compact />
         </Card>
+
+        <SectionTitle>Reading</SectionTitle>
+        <Card className="p-4">
+          <ToggleRow
+            label="Group by conversation"
+            hint="One row per conversation in the message list, most recent first."
+            value={groupConversations}
+            onChange={setGroupConversations}
+          />
+        </Card>
+
+        <SectionTitle>Screen lock</SectionTitle>
+        <ScreenLockSection />
+
+        <SectionTitle>Sending</SectionTitle>
+        <SendDelaySection />
+
+        <SectionTitle>Notifications</SectionTitle>
+        <NotificationsSection />
+
+        <SectionTitle>Labels</SectionTitle>
+        <LabelsSection />
 
         <SectionTitle>Appearance</SectionTitle>
         <View className="items-start">

@@ -1,10 +1,22 @@
-import { ImapFlow, type FetchMessageObject, type MessageAddressObject, type MessageStructureObject } from "imapflow";
+import {
+  ImapFlow,
+  type FetchMessageObject,
+  type FetchQueryObject,
+  type MessageAddressObject,
+  type MessageStructureObject,
+  type SearchObject,
+} from "imapflow";
 import { simpleParser, type AddressObject } from "mailparser";
 import nodemailer from "nodemailer";
-import type { ConfigStore } from "./config.js";
-import { refreshGoogleAccessToken, signInWithGoogle, type GoogleClient } from "./google-oauth.js";
-import { GMAIL_PRESET, MAIL_PRESETS, type HostConfig } from "./presets.js";
+import type { ConfigStore, StoredAccount } from "./config.js";
+import { refreshGoogleAccessToken, signInWithGoogle, type GoogleClient, type GoogleClientSource } from "./google-oauth.js";
+import { GMAIL_PRESET, MAIL_PRESETS, paletteColor, type HostConfig } from "./presets.js";
+import { applySignature } from "./signature.js";
+import { labelKeyword, labelsFromFlags } from "./labels.js";
+import { zip } from "./zip.js";
+import { TRACKING_PIXEL } from "./tracking.js";
 import type {
+  AccountCalendar,
   AccountId,
   AccountInfo,
   AccountInput,
@@ -16,6 +28,7 @@ import type {
   MailMessage,
   MessageHeader,
   MessagePage,
+  NewMail,
   OutgoingMail,
   SendResult,
 } from "./types.js";
@@ -33,6 +46,9 @@ export class MailError extends Error {
 interface Account {
   id: AccountId;
   label: string;
+  color?: string;
+  signature?: string;
+  calendar?: StoredAccount["calendar"];
   name: string;
   address: string;
   source: "env" | "app";
@@ -48,10 +64,10 @@ type Credentials = { user: string; pass: string } | { user: string; accessToken:
 
 export interface MailServiceOptions {
   env?: NodeJS.ProcessEnv;
-  /** Accounts added through the API. Without it, only .env accounts are available. */
+  /** Accounts added through the API. Without it, only environment-variable accounts are available. */
   store?: ConfigStore;
-  /** Needed for "Sign in with Google" accounts. */
-  google?: GoogleClient;
+  /** Needed for "Sign in with Google" accounts. A function is asked each time (the client can change while running). */
+  google?: GoogleClient | GoogleClientSource;
   /** Close pooled IMAP connections after this long without use. */
   idleTimeoutMs?: number;
 }
@@ -76,8 +92,22 @@ const ROLE_BY_SPECIAL_USE: Record<string, FolderRole> = {
 };
 const ROLE_ORDER: FolderRole[] = ["inbox", "flagged", "drafts", "sent", "archive", "all", "junk", "trash"];
 const FOLDER_CACHE_MS = 10 * 60_000;
+/** What a message list row needs, including what identifies its conversation. */
+const HEADER_FIELDS: FetchQueryObject = {
+  uid: true,
+  envelope: true,
+  flags: true,
+  bodyStructure: true,
+  size: true,
+  threadId: true,
+  headers: ["references"],
+};
+/** Most new messages announced per inbox per check (a flood is summed up by the apps' refresh). */
+const NEW_MAIL_LIMIT = 20;
+/** Most messages returned for one conversation, per folder searched. */
+const THREAD_LIMIT = 100;
 
-// .env accounts (from the first version of the app) keep working alongside API-added ones.
+// Environment-variable accounts (from the first version of the app) keep working alongside API-added ones.
 function loadEnvAccounts(env: NodeJS.ProcessEnv): Account[] {
   const preset = (id: string) => MAIL_PRESETS.find((p) => p.id === id)!;
   const defs = [
@@ -115,7 +145,7 @@ function loadEnvAccounts(env: NodeJS.ProcessEnv): Account[] {
 export class MailService {
   private envAccounts: Account[];
   private store?: ConfigStore;
-  private google?: GoogleClient;
+  private googleSource: GoogleClientSource;
   private idleTimeoutMs: number;
   private accessTokens = new Map<AccountId, { accessToken: string; expiresAt: number }>();
   private connections = new Map<AccountId, Promise<ImapFlow>>();
@@ -125,8 +155,12 @@ export class MailService {
   constructor({ env = process.env, store, google, idleTimeoutMs = 5 * 60_000 }: MailServiceOptions = {}) {
     this.envAccounts = loadEnvAccounts(env);
     this.store = store;
-    this.google = google;
+    this.googleSource = typeof google === "function" ? google : () => google;
     this.idleTimeoutMs = idleTimeoutMs;
+  }
+
+  private get google(): GoogleClient | undefined {
+    return this.googleSource();
   }
 
   get canManageAccounts(): boolean {
@@ -144,6 +178,9 @@ export class MailService {
     const appAccounts: Account[] = (store?.accounts() ?? []).map((a) => ({
       id: a.id,
       label: a.label,
+      color: a.color,
+      signature: a.signature,
+      calendar: a.calendar,
       name: a.name ?? "",
       address: a.address,
       source: "app",
@@ -158,9 +195,13 @@ export class MailService {
   }
 
   listAccounts(): AccountInfo[] {
-    return this.all().map(({ id, label, name, address, source, authType, saveSentCopy, imap }) => ({
+    return this.all().map(({ id, label, color, signature, calendar, name, address, user, source, authType, saveSentCopy, imap }) => ({
       id,
       label,
+      login: user,
+      color: color ?? paletteColor(id),
+      signature: signature ?? "",
+      calendar: calendarStatus(source, imap.host, calendar),
       name,
       address,
       source,
@@ -168,6 +209,13 @@ export class MailService {
       saveSentCopy,
       imapHost: imap.host,
     }));
+  }
+
+  /** Username and app password, for services that take the same login (iCloud CalDAV). */
+  passwordLogin(id: AccountId): { user: string; pass: string } {
+    const account = this.account(id);
+    if (account.authType !== "password") throw new MailError(409, "This account signs in with Google, not a password");
+    return { user: account.user, pass: account.secret() };
   }
 
   hasAccount(id: AccountId): boolean {
@@ -219,6 +267,7 @@ export class MailService {
     await this.testConnection(input, { user, pass: input.password });
     const stored = store.addAccount({
       label: input.label?.trim() || address,
+      color: input.color,
       name: input.name?.trim() || undefined,
       address,
       imap: input.imap,
@@ -247,13 +296,13 @@ export class MailService {
   }
 
   updateAccount(id: AccountId, update: AccountUpdate): AccountInfo {
-    if (this.account(id).source !== "app") throw new MailError(409, "Accounts from .env can only be changed in .env");
+    if (this.account(id).source !== "app") throw new MailError(409, "Accounts from environment variables can only be changed there");
     this.requireStore().updateAccount(id, update);
     return this.listAccounts().find((a) => a.id === id)!;
   }
 
   async removeAccount(id: AccountId): Promise<void> {
-    if (this.account(id).source !== "app") throw new MailError(409, "Accounts from .env can only be removed in .env");
+    if (this.account(id).source !== "app") throw new MailError(409, "Accounts from environment variables can only be removed there");
     this.requireStore().removeAccount(id);
     this.accessTokens.delete(id);
     await this.disconnect(id);
@@ -376,7 +425,7 @@ export class MailService {
 
   /** Newest messages first, `limit` at a time. */
   async listMessages(id: AccountId, { folder = "INBOX", limit = 50, offset = 0, query }: ListOptions = {}): Promise<MessagePage> {
-    const fields = { uid: true, envelope: true, flags: true, bodyStructure: true, size: true } as const;
+    const fields = HEADER_FIELDS;
     return this.withFolder(id, folder, async (imap) => {
       const messages: MessageHeader[] = [];
       let total: number;
@@ -411,8 +460,19 @@ export class MailService {
 
   /** Newest inbox messages across every account, merged by date. */
   async listAllInboxes(limit = 50): Promise<MessagePage> {
+    return this.listAll("inbox", limit);
+  }
+
+  /** Newest messages of one kind of folder (Inbox or Sent) across every account, merged by date. */
+  async listAll(role: "inbox" | "sent", limit = 50): Promise<MessagePage> {
     const accounts = this.listAccounts();
-    const results = await Promise.allSettled(accounts.map((a) => this.listMessages(a.id, { limit })));
+    const results = await Promise.allSettled(
+      accounts.map(async (a) => {
+        if (role === "inbox") return this.listMessages(a.id, { limit });
+        const sent = await this.folderForRole(a.id, ["sent"]);
+        return sent ? this.listMessages(a.id, { folder: sent.path, limit }) : { messages: [], total: 0 };
+      }),
+    );
     const page: MessagePage = { messages: [], total: 0, errors: [] };
     results.forEach((r, i) => {
       if (r.status === "fulfilled") {
@@ -431,7 +491,7 @@ export class MailService {
     return this.withFolder(id, folder, async (imap) => {
       const msg = await imap.fetchOne(
         String(uid),
-        { uid: true, source: true, envelope: true, flags: true, bodyStructure: true, size: true },
+        { ...HEADER_FIELDS, source: true },
         { uid: true },
       );
       if (!msg || !msg.source) throw new MailError(404, `Message ${uid} not found in ${folder}`);
@@ -450,7 +510,8 @@ export class MailService {
       replyTo: parsedAddresses(parsed.replyTo),
       references: Array.isArray(references) ? references : [references],
       text: parsed.text ?? "",
-      html: parsed.html || null,
+      // Your own tracked mail: showing it here mustn't count as the recipient opening it.
+      html: parsed.html ? parsed.html.replace(TRACKING_PIXEL, "") : null,
       attachments: parsed.attachments.map((a, index) => ({
         index,
         filename: a.filename ?? `attachment-${index + 1}`,
@@ -459,6 +520,85 @@ export class MailService {
         inline: a.contentDisposition === "inline" && Boolean(a.contentId),
       })),
     };
+  }
+
+  /**
+   * Every message in the conversation of `folder`/`uid`, newest first. Looks in
+   * that folder first, then All Mail on Gmail, or Inbox and Sent elsewhere, so
+   * your own replies are included. A message in several folders appears once,
+   * preferring the copy in `folder`.
+   */
+  async getThread(id: AccountId, folder: string, uid: number): Promise<MessageHeader[]> {
+    const { target, gmail, serverThreads } = await this.withFolder(id, folder, async (imap) => {
+      const msg = await imap.fetchOne(String(uid), HEADER_FIELDS, { uid: true });
+      if (!msg) throw new MailError(404, `Message ${uid} not found in ${folder}`);
+      return { target: toHeader(id, folder, msg), gmail: imap.capabilities.has("X-GM-EXT-1"), serverThreads: Boolean(msg.threadId) };
+    });
+    const threadId = target.threadId;
+    if (!threadId) return [target];
+
+    const folders = new Set([folder]);
+    const all = gmail ? await this.folderForRole(id, ["all"]) : undefined;
+    if (all) folders.add(all.path);
+    else {
+      folders.add("INBOX");
+      const sent = await this.folderForRole(id, ["sent"]);
+      if (sent) folders.add(sent.path);
+    }
+
+    const criteria: SearchObject = serverThreads
+      ? { threadId }
+      : { or: [{ header: { "message-id": threadId } }, { header: { references: threadId } }, { header: { "in-reply-to": threadId } }] };
+    const found: MessageHeader[] = [target];
+    for (const path of folders) {
+      try {
+        const headers = await this.withFolder(id, path, async (imap) => {
+          const uids = ((await imap.search(criteria, { uid: true })) || []).sort((a, b) => b - a).slice(0, THREAD_LIMIT);
+          const out: MessageHeader[] = [];
+          if (uids.length) for await (const msg of imap.fetch(uids.join(","), HEADER_FIELDS, { uid: true })) out.push(toHeader(id, path, msg));
+          return out;
+        });
+        found.push(...headers.filter((h) => h.threadId === threadId));
+      } catch (err) {
+        // The conversation is still worth showing without the other folders.
+        if (path === folder) throw err;
+        console.warn(`[thread ${id}] couldn't search ${path}: ${describe(err)}`);
+      }
+    }
+
+    const unique = new Map<string, MessageHeader>();
+    for (const h of found) {
+      const key = h.messageId ?? `${h.folder}:${h.uid}`;
+      if (!unique.has(key)) unique.set(key, h);
+    }
+    return [...unique.values()].sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  }
+
+  /**
+   * Where the inbox stands, and the messages that arrived after `after`. Without
+   * `after` (or when the inbox's UIDVALIDITY changed) it only reports where it
+   * stands, so nothing old is taken for new.
+   */
+  async inboxSince(
+    id: AccountId,
+    after?: { uidValidity: string; uid: number },
+  ): Promise<{ uidValidity: string; uid: number; arrived: NewMail[] }> {
+    return this.withFolder(id, "INBOX", async (imap) => {
+      await imap.noop(); // a pooled connection learns about new mail this way
+      const uidValidity = String(imap.mailbox ? imap.mailbox.uidValidity : "");
+      const exists = imap.mailbox ? imap.mailbox.exists : 0;
+      const newest = exists ? await imap.fetchOne("*", { uid: true }) : false;
+      const last = newest ? newest.uid : 0;
+      if (!after || after.uidValidity !== uidValidity || last <= after.uid) return { uidValidity, uid: Math.max(last, after?.uid ?? 0), arrived: [] };
+
+      const arrived: NewMail[] = [];
+      const range = `${after.uid + 1}:${last}`;
+      for await (const msg of imap.fetch(range, { ...HEADER_FIELDS, source: { maxLength: 32_768 } }, { uid: true })) {
+        if (msg.uid <= after.uid) continue;
+        arrived.push({ message: toHeader(id, "INBOX", msg), preview: await previewText(msg.source) });
+      }
+      return { uidValidity, uid: last, arrived: arrived.slice(-NEW_MAIL_LIMIT) };
+    });
   }
 
   async getAttachment(id: AccountId, folder: string, uid: number, index: number) {
@@ -472,21 +612,37 @@ export class MailService {
     };
   }
 
+  /** Every attachment (not inline images) of a message in one ZIP, named after the subject. */
+  async getAttachmentsZip(id: AccountId, folder: string, uid: number) {
+    const msg = await this.fetchSource(id, folder, uid);
+    const parsed = await simpleParser(msg.source!);
+    const files = parsed.attachments.filter((a) => !(a.contentDisposition === "inline" && a.contentId));
+    if (!files.length) throw new MailError(404, "This message has no attachments");
+    const date = parsed.date ?? new Date();
+    const content = zip(files.map((a, i) => ({ name: a.filename ?? `attachment-${i + 1}`, content: a.content, date })));
+    const base = (parsed.subject ?? "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim().slice(0, 80) || "attachments";
+    return { filename: `${base}.zip`, contentType: "application/zip", content };
+  }
+
   // ----------------------------------------------------------------- writes
 
   async setFlags(
     id: AccountId,
     folder: string,
     uid: number,
-    flags: { seen?: boolean; flagged?: boolean; answered?: boolean },
+    flags: { seen?: boolean; flagged?: boolean; answered?: boolean; labels?: Record<string, boolean> },
   ): Promise<void> {
     const names = { seen: "\\Seen", flagged: "\\Flagged", answered: "\\Answered" } as const;
+    const add: string[] = [];
+    const remove: string[] = [];
+    for (const [key, flag] of Object.entries(names) as [keyof typeof names, string][]) {
+      if (flags[key] === true) add.push(flag);
+      if (flags[key] === false) remove.push(flag);
+    }
+    for (const [label, on] of Object.entries(flags.labels ?? {})) (on ? add : remove).push(labelKeyword(label));
     await this.withFolder(id, folder, async (imap) => {
-      for (const [key, flag] of Object.entries(names) as [keyof typeof names, string][]) {
-        const value = flags[key];
-        if (value === true) await imap.messageFlagsAdd(String(uid), [flag], { uid: true });
-        if (value === false) await imap.messageFlagsRemove(String(uid), [flag], { uid: true });
-      }
+      if (add.length) await imap.messageFlagsAdd(String(uid), add, { uid: true });
+      if (remove.length) await imap.messageFlagsRemove(String(uid), remove, { uid: true });
     });
     this.folderCache.delete(id); // unread counts changed
   }
@@ -533,10 +689,9 @@ export class MailService {
     return folder.path;
   }
 
-  async send(accountId: AccountId, mail: OutgoingMail): Promise<SendResult> {
-    const account = this.account(accountId);
-    // Build the message once so the SMTP copy and the "Sent" copy are identical.
-    const built = await nodemailer.createTransport({ streamTransport: true, buffer: true }).sendMail({
+  /** The message as it goes out (MIME), from an account. */
+  private async build(account: Account, mail: OutgoingMail) {
+    return nodemailer.createTransport({ streamTransport: true, buffer: true }).sendMail({
       from: account.name ? { name: account.name, address: account.address } : account.address,
       to: mail.to,
       cc: mail.cc || undefined,
@@ -546,12 +701,51 @@ export class MailService {
       html: mail.html || undefined,
       inReplyTo: mail.inReplyTo,
       references: mail.references,
+      messageId: mail.messageId,
       attachments: mail.attachments?.map((a) => ({
         filename: a.filename,
         contentType: a.contentType,
         content: Buffer.from(a.content, "base64"),
       })),
     });
+  }
+
+  /**
+   * Saves what's being written to the account's Drafts folder (visible in the
+   * provider's own apps too). `replace` is the previous copy, removed once the
+   * new one is in.
+   */
+  async saveDraft(accountId: AccountId, mail: OutgoingMail, replace?: { folder: string; uid: number }): Promise<{ folder: string; uid: number | null }> {
+    const account = this.account(accountId);
+    const drafts = await this.folderForRole(accountId, ["drafts"]);
+    if (!drafts) throw new MailError(409, "This account has no Drafts folder");
+    const raw = (await this.build(account, { ...mail, to: mail.to || "" })).message as Buffer;
+    const imap = await this.imap(accountId);
+    let uid: number | null = null;
+    try {
+      const appended = await imap.append(drafts.path, raw, ["\\Draft", "\\Seen"]);
+      uid = appended && typeof appended === "object" && appended.uid ? appended.uid : null;
+    } finally {
+      this.touch(accountId);
+    }
+    if (replace && !(replace.folder === drafts.path && replace.uid === uid)) {
+      await this.discardDraft(accountId, replace.folder, replace.uid).catch(() => undefined);
+    }
+    this.folderCache.delete(accountId);
+    return { folder: drafts.path, uid };
+  }
+
+  /** Removes a draft for good (no copy in Trash). */
+  async discardDraft(accountId: AccountId, folder: string, uid: number): Promise<void> {
+    await this.withFolder(accountId, folder, (imap) => imap.messageDelete(String(uid), { uid: true }));
+    this.folderCache.delete(accountId);
+  }
+
+  async send(accountId: AccountId, outgoing: OutgoingMail): Promise<SendResult> {
+    const account = this.account(accountId);
+    const mail = outgoing.signature ? applySignature(outgoing, account.signature ?? "", outgoing.signaturePosition) : outgoing;
+    // Build the message once so the SMTP copy and the "Sent" copy are identical.
+    const built = await this.build(account, mail);
     const raw = built.message as Buffer;
     try {
       await smtpTransport(account.smtp, await this.credentials(account)).sendMail({ envelope: built.envelope, raw });
@@ -572,6 +766,13 @@ export class MailService {
     }
     return { messageId: built.messageId };
   }
+}
+
+function calendarStatus(source: "env" | "app", imapHost: string, stored: StoredAccount["calendar"]): AccountCalendar {
+  // Settings live in the account store, which accounts from environment variables don't have.
+  const provider = source === "app" ? (MAIL_PRESETS.find((p) => p.imap.host === imapHost)?.calendar ?? null) : null;
+  const connected = provider === "icloud" || (provider === "google" && Boolean(stored?.googleSecret));
+  return { provider, enabled: connected && Boolean(stored?.enabled), connected, hidden: stored?.hidden ?? [] };
 }
 
 function defaultSaveSentCopy(imapHost: string): boolean {
@@ -609,9 +810,36 @@ function toHeader(accountId: AccountId, folder: string, msg: FetchMessageObject)
     seen: msg.flags?.has("\\Seen") ?? false,
     flagged: msg.flags?.has("\\Flagged") ?? false,
     answered: msg.flags?.has("\\Answered") ?? false,
+    labels: labelsFromFlags(msg.flags),
     hasAttachments: hasAttachment(msg.bodyStructure),
     size: msg.size ?? 0,
+    threadId: conversationId(msg),
   };
+}
+
+/** The first words of a message's text (from its possibly truncated source). */
+async function previewText(source: Buffer | undefined): Promise<string> {
+  if (!source) return "";
+  try {
+    const parsed = await simpleParser(source);
+    const text = parsed.text || (parsed.html ? parsed.html.replace(/<style[\s\S]*?<\/style>|<[^>]+>/gi, " ") : "");
+    const words = text.replace(/\s+/g, " ").trim();
+    return words.length > 140 ? `${words.slice(0, 139).trimEnd()}…` : words;
+  } catch {
+    return "";
+  }
+}
+
+/** `<id@host>` tokens in a header value. */
+function messageIds(value: string | undefined): string[] {
+  return value?.match(/<[^<>\s]+>/g) ?? [];
+}
+
+/** The server's thread id, else the conversation's first Message-ID (see MessageHeader.threadId). */
+function conversationId(msg: FetchMessageObject): string | undefined {
+  if (msg.threadId) return msg.threadId;
+  const env = msg.envelope;
+  return messageIds(msg.headers?.toString())[0] ?? messageIds(env?.inReplyTo)[0] ?? messageIds(env?.messageId)[0];
 }
 
 function parsedAddresses(value: AddressObject | AddressObject[] | undefined): Address[] {

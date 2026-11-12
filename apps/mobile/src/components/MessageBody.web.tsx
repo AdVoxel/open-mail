@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MailMessage } from "@mail-app/api-client";
 import { Text } from "@/components/ui/text";
+import { blockContextMenu } from "@/src/lib/contextMenu";
 
 const BASE_STYLE = `
   <base target="_blank">
@@ -31,6 +32,8 @@ export function MessageBody({ message }: { message: MailMessage }) {
     };
     const onLoad = () => {
       measure();
+      // Events inside the message don't reach the app's own listener.
+      frame.contentDocument?.addEventListener("contextmenu", blockContextMenu);
       const body = frame.contentDocument?.body;
       if (body && typeof ResizeObserver !== "undefined") {
         observer = new ResizeObserver(measure);

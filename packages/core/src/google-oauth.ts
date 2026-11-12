@@ -8,10 +8,15 @@ export interface GoogleClient {
   clientSecret: string;
 }
 
+/** Where the client comes from right now (it can be saved from the apps while the server runs). */
+export type GoogleClientSource = () => GoogleClient | undefined;
+
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 // Full IMAP/SMTP access requires this scope; "openid email" gives us the address.
-const SCOPES = "https://mail.google.com/ openid email";
+export const GOOGLE_MAIL_SCOPES = "https://mail.google.com/ openid email";
+/** Read and write calendars (Google Calendar API). */
+export const GOOGLE_CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar openid email";
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 
 interface TokenResponse {
@@ -31,6 +36,7 @@ interface TokenResponse {
 export async function signInWithGoogle(
   client: GoogleClient,
   openUrl: (url: string) => Promise<void> | void,
+  scopes = GOOGLE_MAIL_SCOPES,
 ): Promise<{ email: string; refreshToken: string }> {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -63,7 +69,7 @@ export async function signInWithGoogle(
         client_id: client.clientId,
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: SCOPES,
+        scope: scopes,
         code_challenge: challenge,
         code_challenge_method: "S256",
         state,
@@ -93,6 +99,34 @@ export async function signInWithGoogle(
     return { email: claims.email, refreshToken: tokens.refresh_token };
   } finally {
     server.close();
+  }
+}
+
+/**
+ * Asks Google whether it knows this client ID and secret, without signing anyone
+ * in: a made-up authorization code is refused as "invalid_grant" for a real
+ * client and as "invalid_client" for a wrong one.
+ */
+export async function checkGoogleClient(client: GoogleClient): Promise<void> {
+  let body: TokenResponse;
+  try {
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: "check-only",
+        redirect_uri: "http://127.0.0.1/callback",
+        client_id: client.clientId,
+        client_secret: client.clientSecret,
+      }),
+    });
+    body = (await res.json()) as TokenResponse;
+  } catch (err) {
+    throw new Error(`Couldn't reach Google to check the client: ${(err as Error).message}`);
+  }
+  if (body.error === "invalid_client" || body.error === "unauthorized_client") {
+    throw new Error("Google doesn't recognize this client ID and secret. Copy them again from Google Cloud → Clients.");
   }
 }
 

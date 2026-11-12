@@ -1,7 +1,22 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { describe, MailError, type AccountInfo, type MailService, type Scheduler } from "@mail-app/core";
+import {
+  describe,
+  MailError,
+  type AccountInfo,
+  type CalendarService,
+  type EventReminder,
+  type EventReminders,
+  type LockService,
+  type LabelStore,
+  type MailService,
+  type NewMail,
+  type NewMailWatcher,
+  type Scheduler,
+  type TrackingStore,
+  TRACKING_GIF,
+} from "@mail-app/core";
 
 export interface ServerOptions {
   port: number;
@@ -9,7 +24,32 @@ export interface ServerOptions {
   token: string;
   mail: MailService;
   scheduler: Scheduler;
+  labels: LabelStore;
+  watcher: NewMailWatcher;
+  reminders: EventReminders;
+  calendars: CalendarService;
+  lock: LockService;
+  googleClient: GoogleClientSettings;
+  tracking: TrackingStore;
+  /** Where recipients reach this server (for the tracking pixel); else taken from the request. */
+  publicUrl?: string;
   version?: string;
+}
+
+export interface GoogleClientStatus {
+  configured: boolean;
+  /** "environment": GOOGLE_CLIENT_ID/SECRET (can't be changed from the apps); "app": saved from Settings. */
+  source: "environment" | "app" | null;
+  /** Not secret; shown so you can tell which client is in use. */
+  clientId: string | null;
+}
+
+/** The Google OAuth client, settable from the apps' Settings. */
+export interface GoogleClientSettings {
+  status: () => GoogleClientStatus;
+  /** Checks the client with Google, then saves it (secret encrypted). */
+  save: (client: { clientId: string; clientSecret: string }) => Promise<void>;
+  remove: () => void;
 }
 
 class HttpError extends Error {
@@ -36,8 +76,11 @@ const HostSchema = z.object({
   secure: z.boolean(),
 });
 
+const ColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Expected a color like #2563eb");
+
 const AccountInputSchema = z.object({
   label: z.string().optional(),
+  color: ColorSchema.optional(),
   name: z.string().optional(),
   address: z.string().trim().min(3),
   user: z.string().optional(),
@@ -49,6 +92,8 @@ const AccountInputSchema = z.object({
 
 const AccountUpdateSchema = z.object({
   label: z.string().trim().min(1).optional(),
+  color: ColorSchema.optional(),
+  signature: z.string().max(100_000).optional(),
   name: z.string().trim().optional(),
   saveSentCopy: z.boolean().optional(),
 });
@@ -60,6 +105,9 @@ const MailSchema = z.object({
   subject: z.string(),
   text: z.string(),
   html: z.string().optional(),
+  signature: z.boolean().optional(),
+  signaturePosition: z.enum(["before-quote", "end"]).optional(),
+  track: z.boolean().optional(),
   inReplyTo: z.string().optional(),
   references: z.array(z.string()).optional(),
   attachments: z
@@ -72,6 +120,12 @@ const SendSchema = MailSchema.extend({
   sendAt: z.iso.datetime({ offset: true }).optional(),
 });
 
+/** A draft can be saved before it has recipients. */
+const DraftSchema = MailSchema.extend({
+  to: z.string(),
+  replace: z.object({ folder: z.string().min(1), uid: z.number().int().positive() }).optional(),
+});
+
 const ScheduleSchema = MailSchema.extend({
   accountId: z.string().min(1),
   sendAt: z.iso.datetime({ offset: true }),
@@ -82,11 +136,52 @@ const ScheduleUpdateSchema = MailSchema.partial().extend({
   sendAt: z.iso.datetime({ offset: true }).optional(),
 });
 
+const LabelIdSchema = z.string().regex(/^[0-9a-f]{8}$/, "Unknown label id");
+
 const FlagsSchema = z.object({
   seen: z.boolean().optional(),
   flagged: z.boolean().optional(),
   answered: z.boolean().optional(),
+  /** label id → true to add the label, false to remove it */
+  labels: z.record(LabelIdSchema, z.boolean()).optional(),
 });
+
+const LabelSchema = z.object({
+  name: z.string().trim().min(1, "Give the label a name").max(60),
+  color: ColorSchema,
+});
+
+const CalendarSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  hidden: z.array(z.string()).max(500).optional(),
+});
+
+const EventInputSchema = z.object({
+  title: z.string().max(1000),
+  start: z.string().min(10).max(40),
+  end: z.string().min(10).max(40),
+  allDay: z.boolean(),
+  location: z.string().max(2000).optional(),
+  description: z.string().max(50_000).optional(),
+});
+
+const EventTargetSchema = z.object({ accountId: z.string().min(1), calendarId: z.string().min(1) });
+const RespondSchema = EventTargetSchema.extend({ eventId: z.string().min(1), response: z.enum(["accepted", "tentative", "declined"]) });
+const NewEventSchema = EventInputSchema.extend(EventTargetSchema.shape);
+const EventUpdateSchema = NewEventSchema.extend({ eventId: z.string().min(1) });
+
+const GoogleClientSchema = z.object({
+  clientId: z
+    .string()
+    .trim()
+    .regex(/^[\w.-]+\.apps\.googleusercontent\.com$/, "The client ID ends in .apps.googleusercontent.com"),
+  clientSecret: z.string().trim().min(10, "Paste the whole client secret").max(200),
+});
+
+const PasswordSchema = z.object({ password: z.string().min(1).max(200) });
+const SetPasswordSchema = PasswordSchema.extend({ currentPassword: z.string().max(200).optional() });
+const ResetRequestSchema = z.object({ accountId: z.string().min(1) });
+const ResetConfirmSchema = PasswordSchema.extend({ code: z.string().min(1).max(12) });
 
 const MoveSchema = z.object({
   /** A folder path, or "inbox" | "archive" | "trash" | "junk". */
@@ -94,6 +189,7 @@ const MoveSchema = z.object({
 });
 
 type Params = Record<string, string>;
+type OutgoingMailBody = z.infer<typeof MailSchema>;
 type Handler = (req: IncomingMessage, params: Params, url: URL) => Promise<unknown> | unknown;
 
 interface GoogleSession {
@@ -107,7 +203,37 @@ interface GoogleSession {
  * /api/health needs `Authorization: Bearer <token>`; mail passwords never
  * leave this process.
  */
-export function startServer({ port, host, token, mail, scheduler, version = "dev" }: ServerOptions): Server {
+export function startServer({
+  port,
+  host,
+  token,
+  mail,
+  scheduler,
+  labels,
+  watcher,
+  reminders,
+  calendars,
+  lock,
+  googleClient,
+  tracking,
+  publicUrl,
+  version = "dev",
+}: ServerOptions): Server {
+  /** The address recipients use to reach this server: MAIL_APP_PUBLIC_URL, else what the app called (behind a proxy too). */
+  function publicBase(req: IncomingMessage): string {
+    if (publicUrl) return publicUrl;
+    const proto = String(req.headers["x-forwarded-proto"] ?? "http").split(",")[0]!.trim();
+    const hostHeader = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? `localhost:${port}`).split(",")[0]!.trim();
+    return `${proto}://${hostHeader}`;
+  }
+
+  /** Tracked mail gets its pixel (and own Message-ID) before it's sent or scheduled. */
+  function withTracking<T extends OutgoingMailBody>(req: IncomingMessage, accountId: string, outgoing: T): T {
+    if (!outgoing.track) return outgoing;
+    const account = mail.listAccounts().find((a) => a.id === accountId);
+    return { ...outgoing, ...tracking.track(accountId, account?.address ?? "", outgoing, publicBase(req)), track: false };
+  }
+
   if (!token) throw new Error("MAIL_APP_TOKEN is required");
   const expected = Buffer.from(`Bearer ${token}`);
   const googleSessions = new Map<string, GoogleSession>();
@@ -133,7 +259,11 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
   }
 
   const routes: [method: string, pattern: string, handler: Handler][] = [
-    ["GET", "/api/capabilities", () => ({ version, manageAccounts: mail.canManageAccounts, googleSignIn: mail.canSignInWithGoogle })],
+    [
+      "GET",
+      "/api/capabilities",
+      () => ({ version, manageAccounts: mail.canManageAccounts, googleSignIn: mail.canSignInWithGoogle, googleCalendar: calendars.canConnectGoogle }),
+    ],
 
     // Accounts
     ["GET", "/api/accounts", () => mail.listAccounts()],
@@ -198,7 +328,8 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
     [
       "GET",
       "/api/messages",
-      (_req, _params, url) => mail.listAllInboxes(intParam(url, "limit", 50, 200)),
+      // ?mailbox=sent: every account's Sent folder instead of the inboxes.
+      (_req, _params, url) => mail.listAll(url.searchParams.get("mailbox") === "sent" ? "sent" : "inbox", intParam(url, "limit", 50, 200)),
     ],
     [
       "GET",
@@ -215,6 +346,19 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
       "GET",
       "/api/accounts/:id/messages/:uid",
       (_req, params, url) => mail.getMessage(requireAccount(params), folderParam(url), uidParam(params)),
+    ],
+    [
+      "GET",
+      "/api/accounts/:id/messages/:uid/thread",
+      (_req, params, url) => mail.getThread(requireAccount(params), folderParam(url), uidParam(params)),
+    ],
+    [
+      "GET",
+      "/api/accounts/:id/messages/:uid/attachments",
+      async (_req, params, url) => {
+        const file = await mail.getAttachmentsZip(requireAccount(params), folderParam(url), uidParam(params));
+        return new FileResponse(file.filename, file.contentType, file.content);
+      },
     ],
     [
       "GET",
@@ -254,11 +398,213 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
       "/api/accounts/:id/send",
       async (req, params) => {
         const accountId = requireAccount(params);
-        const { sendAt, ...outgoing } = parse(SendSchema, await readJson(req));
+        const { sendAt, ...requested } = parse(SendSchema, await readJson(req));
+        const outgoing = withTracking(req, params.id!, requested);
         if (sendAt && Date.parse(sendAt) > Date.now() + 5_000) {
           return { scheduled: scheduler.create(accountId, outgoing, new Date(sendAt)) };
         }
         return { sent: await mail.send(accountId, outgoing) };
+      },
+    ],
+
+    // Scheduled mail
+    // Google OAuth client (for Google sign-in and Google Calendar)
+    ["GET", "/api/google-client", () => googleClient.status()],
+    [
+      "PUT",
+      "/api/google-client",
+      async (req) => {
+        await googleClient.save(parse(GoogleClientSchema, await readJson(req)));
+        return googleClient.status();
+      },
+    ],
+    [
+      "DELETE",
+      "/api/google-client",
+      () => {
+        googleClient.remove();
+        return googleClient.status();
+      },
+    ],
+
+    // Screen lock
+    ["GET", "/api/lock", () => ({ enabled: lock.enabled })],
+    [
+      "PUT",
+      "/api/lock",
+      async (req) => {
+        const { password, currentPassword } = parse(SetPasswordSchema, await readJson(req));
+        await lock.set(password, currentPassword);
+        return { enabled: true };
+      },
+    ],
+    [
+      "DELETE",
+      "/api/lock",
+      async (req) => {
+        await lock.disable(parse(PasswordSchema, await readJson(req)).password);
+        return { enabled: false };
+      },
+    ],
+    [
+      "POST",
+      "/api/lock/unlock",
+      async (req) => {
+        await lock.check(parse(PasswordSchema, await readJson(req)).password);
+        return { ok: true };
+      },
+    ],
+    [
+      "POST",
+      "/api/lock/reset",
+      async (req) => {
+        const { accountId } = parse(ResetRequestSchema, await readJson(req));
+        return { sentTo: await lock.requestReset(requireAccount({ id: accountId })) };
+      },
+    ],
+    [
+      "POST",
+      "/api/lock/reset/confirm",
+      async (req) => {
+        const { code, password } = parse(ResetConfirmSchema, await readJson(req));
+        lock.confirmReset(code, password);
+        return { ok: true };
+      },
+    ],
+
+    // Calendars
+    ["GET", "/api/calendars", () => calendars.listCalendars()],
+    [
+      "PATCH",
+      "/api/accounts/:id/calendar",
+      async (req, params) => calendars.updateSettings(requireAccount(params), parse(CalendarSettingsSchema, await readJson(req))),
+    ],
+    [
+      "POST",
+      "/api/accounts/:id/calendar/google",
+      async (_req, params) => {
+        const accountId = requireAccount(params);
+        if (!calendars.canConnectGoogle) throw new HttpError(501, "Google sign-in is not configured on the server (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET)");
+        const id = randomUUID();
+        const session: GoogleSession = { status: "pending" };
+        googleSessions.set(id, session);
+        const url = await new Promise<string>((resolve, reject) => {
+          calendars
+            .connectGoogle(accountId, (authUrl) => resolve(authUrl))
+            .then((account) => Object.assign(session, { status: "done", account }))
+            .catch((err: unknown) => {
+              Object.assign(session, { status: "error", error: describe(err) });
+              reject(err);
+            })
+            .finally(() => setTimeout(() => googleSessions.delete(id), 10 * 60_000).unref());
+        });
+        return { sessionId: id, url };
+      },
+    ],
+    ["DELETE", "/api/accounts/:id/calendar/google", (_req, params) => calendars.disconnectGoogle(requireAccount(params))],
+    [
+      "POST",
+      "/api/calendar/events/respond",
+      async (req) => {
+        const { accountId, calendarId, eventId, response } = parse(RespondSchema, await readJson(req));
+        requireAccount({ id: accountId });
+        await calendars.respond(accountId, calendarId, eventId, response);
+        reminders.invalidate();
+        return { ok: true };
+      },
+    ],
+    [
+      "GET",
+      "/api/calendar/events",
+      (_req, _params, url) => {
+        const from = new Date(url.searchParams.get("from") ?? "");
+        const to = new Date(url.searchParams.get("to") ?? "");
+        if (Number.isNaN(+from) || Number.isNaN(+to)) throw new HttpError(400, "Pass from and to as ISO dates");
+        return calendars.listEvents(from, to);
+      },
+    ],
+    [
+      "POST",
+      "/api/calendar/events",
+      async (req) => {
+        const { accountId, calendarId, ...input } = parse(NewEventSchema, await readJson(req));
+        requireAccount({ id: accountId });
+        const event = await calendars.createEvent(accountId, calendarId, input);
+        reminders.invalidate();
+        return event;
+      },
+    ],
+    [
+      "PATCH",
+      "/api/calendar/events",
+      async (req) => {
+        const { accountId, calendarId, eventId, ...input } = parse(EventUpdateSchema, await readJson(req));
+        requireAccount({ id: accountId });
+        const event = await calendars.updateEvent(accountId, calendarId, eventId, input);
+        reminders.invalidate();
+        return event;
+      },
+    ],
+    [
+      "DELETE",
+      "/api/calendar/events",
+      async (_req, _params, url) => {
+        const accountId = url.searchParams.get("accountId") ?? "";
+        const calendarId = url.searchParams.get("calendarId") ?? "";
+        const eventId = url.searchParams.get("eventId") ?? "";
+        if (!calendarId || !eventId) throw new HttpError(400, "Pass accountId, calendarId and eventId");
+        requireAccount({ id: accountId });
+        await calendars.deleteEvent(accountId, calendarId, eventId);
+        reminders.invalidate();
+        return { ok: true };
+      },
+    ],
+
+    // Open tracking: ?messageId= for one message, else every tracked one.
+    ["GET", "/api/tracking", (_req, _params, url) => tracking.summaries(url.searchParams.getAll("messageId").filter(Boolean).length ? url.searchParams.getAll("messageId") : undefined)],
+
+    // Labels
+    ["GET", "/api/labels", () => labels.list()],
+    [
+      "POST",
+      "/api/labels",
+      async (req) => {
+        const { name, color } = parse(LabelSchema, await readJson(req));
+        return labels.add(name, color);
+      },
+    ],
+    [
+      "PATCH",
+      "/api/labels/:lid",
+      async (req, params) => {
+        if (!labels.list().some((l) => l.id === params.lid)) throw new HttpError(404, "Label not found");
+        return labels.update(params.lid!, parse(LabelSchema.partial(), await readJson(req)));
+      },
+    ],
+    [
+      "DELETE",
+      "/api/labels/:lid",
+      (_req, params) => {
+        labels.remove(params.lid!);
+        return { ok: true };
+      },
+    ],
+
+    // Drafts
+    [
+      "POST",
+      "/api/accounts/:id/drafts",
+      async (req, params) => {
+        const { replace, ...mailFields } = parse(DraftSchema, await readJson(req));
+        return mail.saveDraft(requireAccount(params), mailFields, replace);
+      },
+    ],
+    [
+      "DELETE",
+      "/api/accounts/:id/drafts/:uid",
+      async (_req, params, url) => {
+        await mail.discardDraft(requireAccount(params), folderParam(url), uidParam(params));
+        return { ok: true };
       },
     ],
 
@@ -268,7 +614,8 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
       "POST",
       "/api/scheduled",
       async (req) => {
-        const { accountId, sendAt, ...outgoing } = parse(ScheduleSchema, await readJson(req));
+        const { accountId, sendAt, ...requested } = parse(ScheduleSchema, await readJson(req));
+        const outgoing = withTracking(req, accountId, requested);
         if (Date.parse(sendAt) <= Date.now()) throw new HttpError(400, "sendAt must be in the future");
         return scheduler.create(accountId, outgoing, new Date(sendAt));
       },
@@ -311,10 +658,29 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
       return send(res, 200, { ok: true, version, time: new Date().toISOString() });
     }
 
+    // The open-tracking pixel: public (recipients load it), always the same image.
+    const pixel = req.method === "GET" && /^\/t\/([0-9a-f]{32})\.gif$/.exec(url.pathname);
+    if (pixel) {
+      tracking.recordOpen(pixel[1]!, req.headers["user-agent"]);
+      // Every way of saying "don't keep this": each open should reach the server again.
+      res.writeHead(200, {
+        "Content-Type": "image/gif",
+        "Content-Length": TRACKING_GIF.length,
+        "Cache-Control": "no-store, no-cache, must-revalidate, private, max-age=0, s-maxage=0, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
+        "Surrogate-Control": "no-store",
+        "CDN-Cache-Control": "no-store",
+      });
+      return res.end(TRACKING_GIF);
+    }
+
     const auth = Buffer.from(req.headers.authorization ?? "");
     if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) {
       return send(res, 401, { error: "Unauthorized" });
     }
+
+    if (req.method === "GET" && url.pathname === "/api/events") return streamEvents(req, res, watcher, reminders);
 
     try {
       let pathMatched = false;
@@ -337,6 +703,30 @@ export function startServer({ port, host, token, mail, scheduler, version = "dev
 
   server.listen(port, host, () => console.log(`Mail API listening on http://${host}:${port}`));
   return server;
+}
+
+/**
+ * Server-sent events for the apps: `event: mail` with a NewMail as data each
+ * time mail arrives. Comments every 25s keep proxies from closing it.
+ */
+function streamEvents(req: IncomingMessage, res: ServerResponse, watcher: NewMailWatcher, reminders: EventReminders): void {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no", // nginx: don't buffer the stream
+  });
+  res.write(": connected\n\n");
+  const onMail = (mail: NewMail) => res.write(`event: mail\ndata: ${JSON.stringify(mail)}\n\n`);
+  const onReminder = (reminder: EventReminder) => res.write(`event: reminder\ndata: ${JSON.stringify(reminder)}\n\n`);
+  const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+  watcher.on("mail", onMail);
+  reminders.on("reminder", onReminder);
+  req.on("close", () => {
+    clearInterval(ping);
+    watcher.off("mail", onMail);
+    reminders.off("reminder", onReminder);
+  });
 }
 
 function matchPath(pattern: string, path: string): Params | null {

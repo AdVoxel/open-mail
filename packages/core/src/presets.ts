@@ -17,6 +17,8 @@ export interface MailPreset {
    */
   saveSentCopy: boolean;
   help: string;
+  /** How the server reaches this provider's calendars, if it can. */
+  calendar?: "icloud" | "google";
 }
 
 export const MAIL_PRESETS: MailPreset[] = [
@@ -27,6 +29,7 @@ export const MAIL_PRESETS: MailPreset[] = [
     smtp: { host: "smtp.gmail.com", port: 465, secure: true },
     saveSentCopy: false,
     help: "Use an app password: Google Account → Security → 2-Step Verification → App passwords.",
+    calendar: "google",
   },
   {
     id: "icloud",
@@ -35,6 +38,7 @@ export const MAIL_PRESETS: MailPreset[] = [
     smtp: { host: "smtp.mail.me.com", port: 587, secure: false },
     saveSentCopy: true,
     help: "Use an app-specific password: account.apple.com → Sign-In and Security → App-Specific Passwords. If login fails, set the username to the part before the @.",
+    calendar: "icloud",
   },
   {
     id: "zoho",
@@ -55,3 +59,24 @@ export const MAIL_PRESETS: MailPreset[] = [
 ];
 
 export const GMAIL_PRESET = MAIL_PRESETS[0]!;
+
+/** Colors offered for accounts. Readable with white text, in light and dark themes. */
+export const ACCOUNT_COLORS = [
+  "#2563eb", // blue
+  "#16a34a", // green
+  "#d97706", // amber
+  "#dc2626", // red
+  "#9333ea", // purple
+  "#db2777", // pink
+  "#0d9488", // teal
+  "#ea580c", // orange
+  "#4f46e5", // indigo
+  "#64748b", // slate
+] as const;
+
+/** A color from ACCOUNT_COLORS that is always the same for the same key (an account id, an email address). */
+export function paletteColor(key: string): string {
+  let hash = 0;
+  for (const ch of key.toLowerCase()) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return ACCOUNT_COLORS[hash % ACCOUNT_COLORS.length]!;
+}

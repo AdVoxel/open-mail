@@ -1,6 +1,6 @@
 // Small building blocks on top of the gluestack-ui components, so screens share one look.
-import { createContext, useCallback, useContext, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ComponentRef, type ComponentType, type ReactNode } from "react";
+import { ActivityIndicator, Dimensions, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { LucideProps } from "lucide-react-native";
 import {
@@ -14,6 +14,7 @@ import {
 import { Button, ButtonText } from "@/components/ui/button";
 import { Heading } from "@/components/ui/heading";
 import { Pressable } from "@/components/ui/pressable";
+import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { Toast, ToastDescription, ToastTitle, useToast } from "@/components/ui/toast";
 import { initials } from "@/src/lib/format";
@@ -39,21 +40,69 @@ export function IconButton({
   size?: number;
 }) {
   const colors = useColors();
+  const tooltip = useTooltip();
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      // @ts-expect-error `title` is a react-native-web prop (tooltip)
-      title={label}
-      className={`h-9 w-9 items-center justify-center rounded-lg data-[hover=true]:bg-accent data-[active=true]:bg-accent ${
-        active ? "bg-accent" : ""
-      }`}
-    >
-      <IconComponent size={size} color={color ?? colors.foreground} strokeWidth={1.75} />
-    </Pressable>
+    <View ref={tooltip.ref}>
+      <Pressable
+        onPress={() => {
+          tooltip.hide();
+          onPress();
+        }}
+        onHoverIn={tooltip.schedule}
+        onHoverOut={tooltip.hide}
+        disabled={disabled}
+        accessibilityLabel={label}
+        accessibilityRole="button"
+        className={`h-9 w-9 items-center justify-center rounded-lg data-[hover=true]:bg-accent data-[active=true]:bg-accent ${
+          active ? "bg-accent" : ""
+        }`}
+      >
+        <IconComponent size={size} color={color ?? colors.foreground} strokeWidth={1.75} />
+      </Pressable>
+      {tooltip.side ? (
+        <View
+          pointerEvents="none"
+          style={{ position: "absolute", top: "100%", marginTop: 4, zIndex: 50, ...(tooltip.side === "right" ? { right: 0 } : tooltip.side === "left" ? { left: 0 } : { left: "50%", transform: [{ translateX: "-50%" }] }) }}
+          className="rounded-md bg-foreground px-2 py-1"
+        >
+          <Text size="xs" className="font-medium text-background web:whitespace-nowrap">
+            {label}
+          </Text>
+        </View>
+      ) : null}
+    </View>
   );
+}
+
+const TOOLTIP_DELAY_MS = 500;
+
+/**
+ * A hover tooltip for web/desktop that shows only after the pointer rests a
+ * moment. `side` keeps it inside the window: near the right edge it lines up
+ * with the button's right side, near the left edge with its left side.
+ */
+function useTooltip() {
+  const ref = useRef<ComponentRef<typeof View>>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [side, setSide] = useState<"left" | "center" | "right" | null>(null);
+
+  const hide = useCallback(() => {
+    clearTimeout(timer.current);
+    setSide(null);
+  }, []);
+
+  const schedule = useCallback(() => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      ref.current?.measureInWindow((x, _y, width) => {
+        const windowWidth = Dimensions.get("window").width;
+        setSide(x + width / 2 > windowWidth - 120 ? "right" : x + width / 2 < 120 ? "left" : "center");
+      });
+    }, TOOLTIP_DELAY_MS);
+  }, []);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return { ref, side, schedule, hide };
 }
 
 /** Top bar of a pane or screen. */
@@ -134,14 +183,57 @@ export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: (
   );
 }
 
-export function Initials({ name, size = 36 }: { name: string; size?: number }) {
+/** Round avatar with initials; `color` paints it (white text), otherwise it is neutral. */
+export function Initials({ name, size = 36, color }: { name: string; size?: number; color?: string }) {
   return (
-    <View style={{ width: size, height: size, borderRadius: size / 2 }} className="items-center justify-center bg-muted">
-      <Text style={{ fontSize: size * 0.36 }} className="font-semibold text-muted-foreground">
+    <View
+      style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }}
+      className={`items-center justify-center ${color ? "" : "bg-muted"}`}
+    >
+      <Text style={{ fontSize: size * 0.36, color: color ? "#ffffff" : undefined }} className={`font-semibold ${color ? "" : "text-muted-foreground"}`}>
         {initials(name)}
       </Text>
     </View>
   );
+}
+
+/**
+ * A label as a small pill: filled with its color when `on`, outlined otherwise
+ * (used in the picker for labels not on the message).
+ */
+export function LabelChip({
+  name,
+  color,
+  on = true,
+  onPress,
+}: {
+  name: string;
+  color: string;
+  on?: boolean;
+  onPress?: () => void;
+}) {
+  const chip = (
+    <View
+      style={on ? { backgroundColor: color, borderColor: color } : { borderColor: color }}
+      className="flex-row items-center gap-1 rounded-full border px-2 py-0.5"
+    >
+      {!on ? <View style={{ backgroundColor: color }} className="h-1.5 w-1.5 rounded-full" /> : null}
+      <Text size="xs" numberOfLines={1} style={on ? { color: "#ffffff" } : undefined} className="font-medium">
+        {name}
+      </Text>
+    </View>
+  );
+  if (!onPress) return chip;
+  return (
+    <Pressable onPress={onPress} accessibilityRole="checkbox" accessibilityState={{ checked: on }} accessibilityLabel={name}>
+      {chip}
+    </Pressable>
+  );
+}
+
+/** Small round color swatch, e.g. for an account. */
+export function ColorDot({ color, size = 8 }: { color: string; size?: number }) {
+  return <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }} />;
 }
 
 export function SectionTitle({ children }: { children: ReactNode }) {
@@ -185,19 +277,41 @@ export function Segmented<T extends string>({
 
 // ------------------------------------------------------------------ toasts
 
+export interface NotifyOptions {
+  /** A button in the notice, e.g. Undo. Pressing it closes the notice. */
+  action?: { label: string; onPress: () => void };
+  /** How long it stays, in ms. */
+  duration?: number;
+}
+
 export function useNotify() {
   const toast = useToast();
   return useCallback(
-    (title: string, description?: string, kind: "info" | "error" = "info") => {
+    (title: string, description?: string, kind: "info" | "error" = "info", options: NotifyOptions = {}) => {
       toast.show({
         placement: "bottom",
-        duration: kind === "error" ? 6000 : 3000,
+        duration: options.duration ?? (kind === "error" ? 6000 : 3000),
         render: ({ id }) => (
-          <Toast nativeID={`toast-${id}`} action={kind === "error" ? "error" : "muted"} className="min-w-[260px] max-w-[420px] border shadow-hard-2">
-            <ToastTitle size="sm" className={kind === "error" ? "text-destructive" : ""}>
-              {title}
-            </ToastTitle>
-            {description ? <ToastDescription size="sm">{description}</ToastDescription> : null}
+          <Toast nativeID={`toast-${id}`} action={kind === "error" ? "error" : "muted"} className="min-w-[260px] max-w-[420px] flex-row items-center gap-3 border shadow-hard-2">
+            <View className="min-w-0 flex-1 gap-1">
+              <ToastTitle size="sm" className={kind === "error" ? "text-destructive" : ""}>
+                {title}
+              </ToastTitle>
+              {description ? <ToastDescription size="sm">{description}</ToastDescription> : null}
+            </View>
+            {options.action ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-lg"
+                onPress={() => {
+                  toast.close(id);
+                  options.action!.onPress();
+                }}
+              >
+                <ButtonText>{options.action.label}</ButtonText>
+              </Button>
+            ) : null}
           </Toast>
         ),
       });
@@ -270,4 +384,66 @@ export function useConfirm() {
   const confirm = useContext(ConfirmContext);
   if (!confirm) throw new Error("useConfirm must be used inside ConfirmProvider");
   return confirm;
+}
+
+// ------------------------------------------------------------ form rows
+
+const labeledInputClass = "h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground font-sans web:outline-none";
+
+/** A labelled text field (Settings forms). */
+export function LabeledInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  secure,
+  keyboardType,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  secure?: boolean;
+  keyboardType?: "email-address" | "number-pad";
+  className?: string;
+}) {
+  const colors = useColors();
+  return (
+    <View className={`gap-1.5 ${className}`}>
+      <Text size="sm" className="font-medium">
+        {label}
+      </Text>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor={colors.muted}
+        secureTextEntry={secure}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType={keyboardType}
+        className={labeledInputClass}
+      />
+    </View>
+  );
+}
+
+/** A label (and hint) with a switch. */
+export function ToggleRow({ label, hint, value, onChange }: { label: string; hint?: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <View className="flex-row items-center gap-3">
+      <View className="flex-1">
+        <Text size="sm" className="font-medium">
+          {label}
+        </Text>
+        {hint ? (
+          <Text size="xs" className="text-muted-foreground">
+            {hint}
+          </Text>
+        ) : null}
+      </View>
+      <Switch value={value} onValueChange={onChange} size="sm" />
+    </View>
+  );
 }

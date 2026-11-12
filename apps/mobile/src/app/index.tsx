@@ -12,15 +12,20 @@ import { useMail } from "@/src/lib/mail";
 /** Message list; on wide screens with the reader beside it. */
 export default function InboxScreen() {
   const isWide = useIsWide();
-  const { list, selectedKey, setSelectedKey } = useMail();
+  const { list, selectedKey, setSelectedKey, folders } = useMail();
   const selected = list.messages.find((m) => messageKey(m) === selectedKey);
 
   const open = useCallback(
     (m: MessageHeader) => {
+      // A draft opens where it can be finished: in Compose.
+      if (folders[m.accountId]?.find((f) => f.path === m.folder)?.role === "drafts") {
+        router.push({ pathname: "/compose", params: { mode: "draft", accountId: m.accountId, folder: m.folder, uid: String(m.uid) } });
+        return;
+      }
       if (isWide) setSelectedKey(messageKey(m));
       else router.push({ pathname: "/message", params: { accountId: m.accountId, folder: m.folder, uid: String(m.uid) } });
     },
-    [isWide, setSelectedKey],
+    [isWide, setSelectedKey, folders],
   );
 
   if (!isWide) return <MessageList onOpen={open} isWide={false} />;

@@ -11,8 +11,8 @@ export interface SecretCipher {
 }
 
 /**
- * AES-256-GCM with a 32-byte key. On the server the key comes from
- * MAIL_APP_SECRET_KEY or a key file next to the data (see loadOrCreateKey).
+ * AES-256-GCM with a 32-byte key. On the server the key comes from the
+ * MAIL_APP_SECRET_KEY environment variable.
  */
 export function aesCipher(key: Buffer): SecretCipher {
   if (key.length !== 32) throw new Error("The secret key must be 32 bytes");
@@ -33,23 +33,22 @@ export function aesCipher(key: Buffer): SecretCipher {
   };
 }
 
-/** Reads a base64 key file, creating one (mode 600) on first run. */
-export function loadOrCreateKey(path: string): Buffer {
-  if (existsSync(path)) return Buffer.from(readFileSync(path, "utf8").trim(), "base64");
-  const key = randomBytes(32);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, key.toString("base64"), { mode: 0o600 });
-  return key;
-}
-
 export interface StoredAccount {
   id: string;
   label: string;
+  color?: string;
+  signature?: string;
   name?: string;
   address: string;
   imap: HostConfig;
   smtp: HostConfig;
   saveSentCopy?: boolean;
+  calendar?: {
+    enabled?: boolean;
+    hidden?: string[];
+    /** Encrypted Google refresh token with calendar access (Gmail accounts that signed in with an app password). */
+    googleSecret?: string;
+  };
   /** `secret` is the encrypted app password or Google refresh token. */
   auth: { type: AuthType; user: string; secret: string };
 }
@@ -59,6 +58,8 @@ export type NewAccount = Omit<StoredAccount, "id">; // with `auth.secret` in pla
 interface ConfigFile {
   version: 2;
   accounts: StoredAccount[];
+  /** Google OAuth client saved from the apps (the secret encrypted). Environment variables win over it. */
+  google?: { clientId: string; clientSecret: string };
 }
 
 /** Accounts added through the API, saved as JSON with secrets encrypted. */
@@ -70,7 +71,7 @@ export class ConfigStore {
     private cipher: SecretCipher,
   ) {
     const raw = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Partial<ConfigFile>) : {};
-    this.data = { version: 2, accounts: raw.accounts ?? [] };
+    this.data = { version: 2, accounts: raw.accounts ?? [], google: raw.google };
   }
 
   accounts(): StoredAccount[] {
@@ -92,8 +93,46 @@ export class ConfigStore {
     const account = this.data.accounts.find((a) => a.id === id);
     if (!account) throw new Error(`Account "${id}" not found`);
     if (update.label !== undefined) account.label = update.label;
+    if (update.color !== undefined) account.color = update.color;
+    if (update.signature !== undefined) account.signature = update.signature;
     if (update.name !== undefined) account.name = update.name;
     if (update.saveSentCopy !== undefined) account.saveSentCopy = update.saveSentCopy;
+    this.save();
+  }
+
+  updateCalendar(id: string, update: { enabled?: boolean; hidden?: string[] }): void {
+    const account = this.find(id);
+    account.calendar = { ...account.calendar };
+    if (update.enabled !== undefined) account.calendar.enabled = update.enabled;
+    if (update.hidden !== undefined) account.calendar.hidden = update.hidden;
+    this.save();
+  }
+
+  /** Stores (encrypted) or forgets the Google calendar refresh token. */
+  setCalendarToken(id: string, refreshToken: string | null): void {
+    const account = this.find(id);
+    account.calendar = { ...account.calendar, googleSecret: refreshToken ? this.cipher.encrypt(refreshToken) : undefined };
+    if (!refreshToken) account.calendar.enabled = false;
+    this.save();
+  }
+
+  calendarToken(account: StoredAccount): string | null {
+    return account.calendar?.googleSecret ? this.cipher.decrypt(account.calendar.googleSecret) : null;
+  }
+
+  private find(id: string): StoredAccount {
+    const account = this.data.accounts.find((a) => a.id === id);
+    if (!account) throw new Error(`Account "${id}" not found`);
+    return account;
+  }
+
+  googleClient(): { clientId: string; clientSecret: string } | undefined {
+    const google = this.data.google;
+    return google ? { clientId: google.clientId, clientSecret: this.cipher.decrypt(google.clientSecret) } : undefined;
+  }
+
+  setGoogleClient(client: { clientId: string; clientSecret: string } | null): void {
+    this.data.google = client ? { clientId: client.clientId, clientSecret: this.cipher.encrypt(client.clientSecret) } : undefined;
     this.save();
   }
 

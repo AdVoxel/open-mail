@@ -1,43 +1,123 @@
-import { memo, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, RefreshControl, TextInput, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Platform, RefreshControl, TextInput, View } from "react-native";
 import { router } from "expo-router";
-import { Inbox, Menu, Paperclip, PenSquare, RefreshCw, Search, Star, X } from "lucide-react-native";
-import { displayName, messageKey, type MessageHeader } from "@mail-app/api-client";
+import {
+  Archive,
+  Check,
+  CheckCheck,
+  Eye,
+  Inbox,
+  List,
+  ListChecks,
+  Mail,
+  MailOpen,
+  Menu,
+  MessagesSquare,
+  Paperclip,
+  PenSquare,
+  RefreshCw,
+  Search,
+  Star,
+  Tag,
+  Trash2,
+  X,
+} from "lucide-react-native";
+import { displayName, messageKey, type MessageHeader, type TrackingSummary } from "@mail-app/api-client";
+import { useApi } from "@/src/lib/connection";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
 import { formatListDate } from "@/src/lib/format";
-import { useMail, useMailboxTitle } from "@/src/lib/mail";
+import { ALL_SENT, groupByConversation, useMail, useMailboxTitle, type Conversation } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
-import { EmptyState, ErrorBanner, Header, IconButton, Loading } from "./kit";
+import { useMessageActions } from "@/src/lib/useMessageActions";
+import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading } from "./kit";
+import { SwipeRow, useJustSwiped } from "./SwipeRow";
 
 const Row = memo(function Row({
-  message,
+  conversation,
   selected,
+  checked,
+  selecting,
   accountLabel,
+  showRecipients,
+  tracked,
   onPress,
+  onToggleSelect,
 }: {
-  message: MessageHeader;
+  conversation: Conversation;
+  /** Open in the reader beside the list. */
   selected: boolean;
-  accountLabel?: string;
+  /** Ticked for a bulk action. */
+  checked: boolean;
+  /** Some row is ticked: every row shows its checkbox and a tap ticks instead of opening. */
+  selecting: boolean;
+  accountLabel?: { label: string; color: string };
+  /** Sent mail: name the recipients instead of the sender (you). */
+  showRecipients?: boolean;
+  /** Open tracking of this sent message, if it was tracked. */
+  tracked?: TrackingSummary;
   onPress: (m: MessageHeader) => void;
+  onToggleSelect: (c: Conversation) => void;
 }) {
   const colors = useColors();
-  const unread = !message.seen;
+  // react-native-web hovers only the innermost pressable, so pointing at the
+  // checkbox un-hovers the row: track both to keep the checkbox showing.
+  const [rowHovered, setRowHovered] = useState(false);
+  const [boxHovered, setBoxHovered] = useState(false);
+  const { labels: allLabels } = useMail();
+  const justSwiped = useJustSwiped();
+  const { latest: message, count, unread, flagged, answered, hasAttachments } = conversation;
+  const labels = allLabels.filter((l) => conversation.labels.includes(l.id));
+  const showBox = selecting || checked || rowHovered || boxHovered;
   return (
     <Pressable
-      onPress={() => onPress(message)}
+      onPress={() => {
+        if (justSwiped()) return;
+        if (selecting) onToggleSelect(conversation);
+        else onPress(message);
+      }}
+      onLongPress={() => onToggleSelect(conversation)}
+      onHoverIn={() => setRowHovered(true)}
+      onHoverOut={() => setRowHovered(false)}
       className={`flex-row gap-3 border-b border-border/60 py-3 pl-3 pr-4 ${
-        selected ? "bg-accent" : "data-[hover=true]:bg-accent/50"
+        selected || checked ? "bg-accent" : "data-[hover=true]:bg-accent/50"
       }`}
     >
-      <View className="w-2 items-center pt-1.5">
-        {unread ? <View style={{ backgroundColor: colors.accent }} className="h-2 w-2 rounded-full" /> : null}
+      <View className="w-5 items-center pt-0.5">
+        {!showBox && unread ? <View style={{ backgroundColor: colors.accent }} className="absolute top-1.5 h-2 w-2 rounded-full" /> : null}
+        {/* Always mounted so the pointer can reach it; invisible until hovered or selecting. */}
+        <Pressable
+          onPress={() => onToggleSelect(conversation)}
+          onHoverIn={() => setBoxHovered(true)}
+          onHoverOut={() => setBoxHovered(false)}
+          disabled={!showBox && Platform.OS !== "web"}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked }}
+          accessibilityLabel="Select"
+          hitSlop={8}
+          style={[
+            checked ? { backgroundColor: colors.accent, borderColor: colors.accent } : { borderColor: colors.muted },
+            { opacity: showBox ? 1 : 0 },
+          ]}
+          className="h-[18px] w-[18px] items-center justify-center rounded border-[1.5px]"
+        >
+          {checked ? <Check size={13} color="#ffffff" strokeWidth={3} /> : null}
+        </Pressable>
       </View>
       <View className="min-w-0 flex-1 gap-0.5">
         <View className="flex-row items-center gap-2">
-          <Text numberOfLines={1} className={`flex-1 text-[15px] ${unread ? "font-semibold" : "text-foreground/80"}`}>
-            {displayName(message.from)}
+          <Text numberOfLines={1} className={`shrink text-[15px] ${unread ? "font-semibold" : "text-foreground/80"}`}>
+            {showRecipients ? `To: ${message.to.map(displayName).join(", ") || "(no recipient)"}` : displayName(message.from)}
           </Text>
+          {count > 1 ? (
+            <View className="flex-row items-center gap-0.5" accessibilityLabel={`${count} messages`}>
+              <MessagesSquare size={12} color={colors.muted} strokeWidth={2} />
+              <Text size="xs" className="text-muted-foreground">
+                {count}
+              </Text>
+            </View>
+          ) : null}
+          <View className="flex-1" />
           <Text size="xs" className={unread ? "font-medium text-foreground" : "text-muted-foreground"}>
             {formatListDate(message.date)}
           </Text>
@@ -46,22 +126,79 @@ const Row = memo(function Row({
           <Text size="sm" numberOfLines={1} className={`flex-1 ${unread ? "text-foreground" : "text-muted-foreground"}`}>
             {message.subject}
           </Text>
-          {message.hasAttachments ? <Paperclip size={13} color={colors.muted} /> : null}
-          {message.flagged ? <Star size={13} color={colors.star} fill={colors.star} /> : null}
+          {tracked ? (
+            <View
+              className="flex-row items-center gap-0.5"
+              accessibilityLabel={tracked.opens ? `Opened ${tracked.opens} times` : "Tracked, not opened yet"}
+            >
+              <Eye size={13} color={tracked.opens ? colors.accent : colors.muted} />
+              {tracked.opens ? (
+                <Text size="xs" style={{ color: colors.accent }}>
+                  {tracked.opens}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+          {answered ? (
+            <View accessibilityLabel="Replied">
+              <CheckCheck size={14} color={colors.accent} />
+            </View>
+          ) : null}
+          {hasAttachments ? <Paperclip size={13} color={colors.muted} /> : null}
+          {flagged ? <Star size={13} color={colors.star} fill={colors.star} /> : null}
         </View>
+        {labels.length ? (
+          <View className="flex-row flex-wrap gap-1 pt-0.5">
+            {labels.map((l) => (
+              <LabelChip key={l.id} name={l.name} color={l.color} />
+            ))}
+          </View>
+        ) : null}
         {accountLabel ? (
-          <Text size="xs" numberOfLines={1} className="text-muted-foreground/80">
-            {accountLabel}
-          </Text>
+          <View className="flex-row items-center gap-1.5">
+            <ColorDot color={accountLabel.color} />
+            <Text size="xs" numberOfLines={1} className="text-muted-foreground/80">
+              {accountLabel.label}
+            </Text>
+          </View>
         ) : null}
       </View>
     </Pressable>
   );
 });
 
+/** "Updated 14:32:05", with the date when it isn't today. */
+function updatedLabel(at: Date | null): string | null {
+  if (!at) return null;
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return at.toDateString() === new Date().toDateString()
+    ? `Updated ${time}`
+    : `Updated ${at.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
+}
+
 /** The message list pane with its header and search. */
 export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => void; isWide: boolean }) {
-  const { list, refresh, loadMore, hasMore, mailbox, accounts, accountsLoaded, query, setQuery, selectedKey } = useMail();
+  const {
+    list,
+    refresh,
+    loadMore,
+    hasMore,
+    mailbox,
+    accounts,
+    accountsLoaded,
+    query,
+    setQuery,
+    selectedKey,
+    groupConversations,
+    setGroupConversations,
+    labels: allLabels,
+    folders,
+  } = useMail();
+  const api = useApi();
+  const [trackingById, setTrackingById] = useState<Map<string, TrackingSummary>>(() => new Map());
+  const sentView =
+    mailbox.accountId === null ? mailbox.folder === ALL_SENT : folders[mailbox.accountId]?.find((f) => f.path === mailbox.folder)?.role === "sent";
+  const actions = useMessageActions();
   const title = useMailboxTitle();
   const colors = useColors();
   const [searching, setSearching] = useState(false);
@@ -80,17 +217,91 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
     );
   }, [unified, draft, list.messages]);
 
-  const labels = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, a.label])), [accounts]);
+  const rows = useMemo(() => groupByConversation(messages, groupConversations), [messages, groupConversations]);
+
+  // Sent views: opens of tracked messages, refreshed with the list. Older servers: none.
+  useEffect(() => {
+    if (!sentView) return;
+    let cancelled = false;
+    api.tracking().then(
+      (list) => !cancelled && setTrackingById(new Map(list.map((t) => [t.messageId, t]))),
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, sentView, list.updatedAt]);
+  const trackingOf = (c: Conversation) =>
+    sentView ? c.members.map((m) => (m.messageId ? trackingById.get(m.messageId) : undefined)).find(Boolean) : undefined;
+  // Swipes act on the whole conversation.
+  const toggleRead = useCallback((c: Conversation) => actions.setSeen(c.unread ? c.members : [c.latest], c.unread), [actions]);
+  const deleteRow = useCallback((c: Conversation) => actions.remove(c.members), [actions]);
+
+  // Bulk selection: checkboxes on hover (web) or long press (touch).
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [bulkLabels, setBulkLabels] = useState(false);
+  const clearSelection = useCallback(() => {
+    setChecked(new Set());
+    setBulkLabels(false);
+  }, []);
+  useEffect(clearSelection, [mailbox, query, groupConversations, clearSelection]);
+  const toggleSelect = useCallback(
+    (c: Conversation) =>
+      setChecked((current) => {
+        const next = new Set(current);
+        const key = messageKey(c.latest);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+    [],
+  );
+  const checkedRows = rows.filter((c) => checked.has(messageKey(c.latest)));
+  const checkedMessages = checkedRows.flatMap((c) => c.members);
+  const selecting = checkedRows.length > 0;
+  const anyUnread = checkedRows.some((c) => c.unread);
+  const canArchive = checkedMessages.every((m) => actions.roleOf(m) === "inbox" || m.folder.toUpperCase() === "INBOX");
+
+  const labels = useMemo(() => Object.fromEntries(accounts.map((a) => [a.id, { label: a.label, color: a.color }])), [accounts]);
   const unread = list.messages.filter((m) => !m.seen).length;
 
-  const header = (
+  const header = selecting ? (
+    <Header
+      safeTop={!isWide}
+      title={`${checkedRows.length} selected`}
+      left={<IconButton icon={X} label="Clear selection" onPress={clearSelection} />}
+      right={
+        <>
+          {checkedRows.length < rows.length ? (
+            <IconButton icon={ListChecks} label="Select all" onPress={() => setChecked(new Set(rows.map((c) => messageKey(c.latest))))} />
+          ) : null}
+          <IconButton
+            icon={anyUnread ? MailOpen : Mail}
+            label={anyUnread ? "Mark as read" : "Mark as unread"}
+            onPress={() => actions.setSeen(anyUnread ? checkedMessages : checkedRows.map((c) => c.latest), anyUnread)}
+          />
+          {canArchive ? (
+            <IconButton icon={Archive} label="Archive" onPress={() => void actions.archive(checkedMessages).then((ok) => ok && clearSelection())} />
+          ) : null}
+          <IconButton icon={Tag} label="Labels" active={bulkLabels} onPress={() => setBulkLabels((o) => !o)} />
+          <IconButton icon={Trash2} label="Delete" onPress={() => void actions.remove(checkedMessages).then((ok) => ok && clearSelection())} />
+        </>
+      }
+    />
+  ) : (
     <Header
       safeTop={!isWide}
       title={title}
-      subtitle={list.loading && !list.messages.length ? "Loading…" : unread ? `${unread} unread` : undefined}
+      subtitle={list.loading && !list.messages.length ? "Loading…" : [unread ? `${unread} unread` : null, updatedLabel(list.updatedAt)].filter(Boolean).join(" · ") || undefined}
       left={!isWide ? <IconButton icon={Menu} label="Mailboxes" onPress={() => router.push("/mailboxes")} /> : undefined}
       right={
         <>
+          <IconButton
+            icon={groupConversations ? MessagesSquare : List}
+            label={groupConversations ? "Show single messages" : "Group by conversation"}
+            active={groupConversations}
+            onPress={() => setGroupConversations(!groupConversations)}
+          />
           <IconButton icon={Search} label="Search" active={searching} onPress={() => setSearching((s) => !s)} />
           <IconButton icon={RefreshCw} label="Refresh" onPress={() => void refresh()} disabled={list.loading} />
           {!isWide ? <IconButton icon={PenSquare} label="New message" onPress={() => router.push("/compose")} /> : null}
@@ -99,7 +310,25 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
     />
   );
 
-  const searchBar = searching ? (
+  const bulkLabelPanel =
+    selecting && bulkLabels ? (
+      <View className="gap-2 border-b border-border px-4 py-3">
+        {allLabels.length ? (
+          <View className="flex-row flex-wrap gap-1.5">
+            {allLabels.map((l) => {
+              const on = checkedMessages.every((m) => (m.labels ?? []).includes(l.id));
+              return <LabelChip key={l.id} name={l.name} color={l.color} on={on} onPress={() => actions.setLabel(checkedMessages, l.id, !on)} />;
+            })}
+          </View>
+        ) : (
+          <Text size="sm" className="text-muted-foreground">
+            No labels yet. Create them in Settings → Labels.
+          </Text>
+        )}
+      </View>
+    ) : null;
+
+  const searchBar = searching && !selecting ? (
     <View className="flex-row items-center gap-2 border-b border-border px-4 py-2">
       <Search size={16} color={colors.muted} />
       <TextInput
@@ -147,15 +376,22 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   } else {
     body = (
       <FlatList
-        data={messages}
-        keyExtractor={messageKey}
+        data={rows}
+        keyExtractor={(c) => messageKey(c.latest)}
         renderItem={({ item }) => (
-          <Row
-            message={item}
-            selected={isWide && messageKey(item) === selectedKey}
-            accountLabel={unified && accounts.length > 1 ? labels[item.accountId] : undefined}
-            onPress={onOpen}
-          />
+          <SwipeRow unread={item.unread} onToggleRead={() => toggleRead(item)} onDelete={() => deleteRow(item)}>
+            <Row
+              conversation={item}
+              selected={isWide && messageKey(item.latest) === selectedKey}
+              checked={checked.has(messageKey(item.latest))}
+              showRecipients={sentView}
+              tracked={trackingOf(item)}
+              selecting={selecting}
+              onToggleSelect={toggleSelect}
+              accountLabel={unified && accounts.length > 1 ? labels[item.latest.accountId] : undefined}
+              onPress={onOpen}
+            />
+          </SwipeRow>
         )}
         refreshControl={<RefreshControl refreshing={list.loading && list.messages.length > 0} onRefresh={() => void refresh()} />}
         onEndReached={loadMore}
@@ -164,7 +400,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
           <>
             {list.error ? <ErrorBanner message={list.error} onRetry={() => void refresh()} /> : null}
             {list.accountErrors.map((e) => (
-              <ErrorBanner key={e.accountId} message={`${labels[e.accountId] ?? e.accountId}: ${e.error}`} />
+              <ErrorBanner key={e.accountId} message={`${labels[e.accountId]?.label ?? e.accountId}: ${e.error}`} />
             ))}
           </>
         }
@@ -194,6 +430,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   return (
     <View className="flex-1 bg-background">
       {header}
+      {bulkLabelPanel}
       {searchBar}
       {body}
     </View>

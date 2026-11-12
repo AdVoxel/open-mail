@@ -3,6 +3,7 @@ import { ScrollView, View } from "react-native";
 import { router, usePathname } from "expo-router";
 import {
   Archive,
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -21,9 +22,9 @@ import type { Folder, FolderRole } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
-import { useMail, type Mailbox } from "@/src/lib/mail";
+import { ALL_SENT, useMail, type Mailbox } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
-import type { Icon } from "./kit";
+import { ColorDot, type Icon } from "./kit";
 
 const ROLE_ICONS: Record<FolderRole, Icon> = {
   inbox: Inbox,
@@ -93,7 +94,7 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
     if (onDone) onDone();
     else if (!onMail) router.navigate("/");
   };
-  const go = (path: "/scheduled" | "/settings") => {
+  const go = (path: "/scheduled" | "/settings" | "/calendar") => {
     if (onDone) router.push(path);
     else router.navigate(path);
   };
@@ -118,10 +119,18 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
           onPress={() => open({ accountId: null, folder: "INBOX" })}
         />
       ) : null}
+      {accounts.length > 1 ? (
+        <NavItem
+          icon={Send}
+          label="All sent"
+          active={isActive({ accountId: null, folder: ALL_SENT })}
+          onPress={() => open({ accountId: null, folder: ALL_SENT })}
+        />
+      ) : null}
 
       {accounts.map((account, i) => {
         const list: Folder[] = folders[account.id] ?? [{ path: "INBOX", name: "Inbox", role: "inbox", total: null, unread: null }];
-        const isOpen = expanded[account.id] ?? (accounts.length === 1 || mailbox.accountId === account.id || i === 0);
+        const isOpen = expanded[account.id] ?? false; // every account starts collapsed
         const shown = isOpen ? list : list.filter((f) => f.role === "inbox");
         return (
           <View key={account.id} className="mt-3">
@@ -130,6 +139,7 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
               className="h-8 flex-row items-center gap-1.5 rounded-md px-3 data-[hover=true]:bg-accent/60"
             >
               {isOpen ? <ChevronDown size={14} color={colors.muted} /> : <ChevronRight size={14} color={colors.muted} />}
+              <ColorDot color={account.color} />
               <Text size="xs" numberOfLines={1} className="flex-1 font-semibold uppercase tracking-wider text-muted-foreground">
                 {account.label}
               </Text>
@@ -149,6 +159,7 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
       })}
 
       <View className="my-4 h-px bg-border" />
+      <NavItem icon={CalendarDays} label="Calendar" active={pathname === "/calendar" || pathname === "/event"} onPress={() => go("/calendar")} />
       <NavItem icon={Clock} label="Scheduled" active={pathname === "/scheduled"} onPress={() => go("/scheduled")} />
       <NavItem icon={Settings} label="Settings" active={pathname === "/settings"} onPress={() => go("/settings")} />
     </ScrollView>

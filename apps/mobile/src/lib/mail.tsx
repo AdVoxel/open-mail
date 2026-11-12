@@ -1,9 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState } from "react-native";
-import { messageKey, type AccountInfo, type Folder, type MessageHeader } from "@mail-app/api-client";
+import { messageKey, paletteColor, type AccountInfo, type Folder, type MailLabel, type MessageHeader } from "@mail-app/api-client";
 import { useApi } from "./connection";
+import { loadJson, saveJson } from "./storage";
 
-/** `accountId: null` is the unified "All inboxes" view. */
+/** Folder of the unified view of every account's Sent folder (`accountId: null`). */
+export const ALL_SENT = "SENT";
+
+/** `accountId: null` is a unified view: "All inboxes" (folder INBOX) or "All sent" (folder ALL_SENT). */
 export interface Mailbox {
   accountId: string | null;
   folder: string;
@@ -17,6 +21,8 @@ interface ListState {
   error: string | null;
   /** Accounts that failed in the unified view. */
   accountErrors: { accountId: string; error: string }[];
+  /** When the list last refreshed successfully. */
+  updatedAt: Date | null;
 }
 
 interface MailState {
@@ -37,11 +43,18 @@ interface MailState {
   removeMessage: (key: string) => void;
   selectedKey: string | null;
   setSelectedKey: (key: string | null) => void;
+  /** Labels the user defined, to put on messages. */
+  labels: MailLabel[];
+  reloadLabels: () => Promise<void>;
+  /** Show one list row per conversation instead of one per message. */
+  groupConversations: boolean;
+  setGroupConversations: (on: boolean) => void;
 }
 
 const PAGE = 50;
+const GROUP_KEY = "mail.groupConversations";
 const AUTO_REFRESH_MS = 60_000;
-const EMPTY: ListState = { messages: [], total: 0, loading: true, loadingMore: false, error: null, accountErrors: [] };
+const EMPTY: ListState = { messages: [], total: 0, loading: true, loadingMore: false, error: null, accountErrors: [], updatedAt: null };
 const Context = createContext<MailState | null>(null);
 
 export function MailProvider({ children }: { children: ReactNode }) {
@@ -53,11 +66,20 @@ export function MailProvider({ children }: { children: ReactNode }) {
   const [query, setQuery] = useState("");
   const [list, setList] = useState<ListState>(EMPTY);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [groupConversations, setGroupState] = useState(true);
+  const [labels, setLabels] = useState<MailLabel[]>([]);
   const requestId = useRef(0);
   const loaded = useRef(0); // how many messages are currently loaded, for refresh
 
   const reloadAccounts = useCallback(async () => {
-    const next = await api.accounts();
+    // Servers from before account colors and signatures don't send those fields.
+    const next = (await api.accounts()).map((a) => ({
+      ...a,
+      color: a.color ?? paletteColor(a.id),
+      signature: a.signature ?? "",
+      login: a.login ?? a.address,
+      calendar: a.calendar ?? { provider: null, enabled: false, connected: false, hidden: [] },
+    }));
     setAccounts(next);
     setAccountsLoaded(true);
     setMailboxState((m) => {
@@ -67,6 +89,19 @@ export function MailProvider({ children }: { children: ReactNode }) {
       return m;
     });
   }, [api]);
+
+  const reloadLabels = useCallback(async () => {
+    try {
+      setLabels(await api.labels());
+    } catch {
+      // Older servers have no labels.
+      setLabels([]);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    void reloadLabels();
+  }, [reloadLabels]);
 
   const loadFolders = useCallback(
     async (accountId: string, fresh = false) => {
@@ -82,7 +117,10 @@ export function MailProvider({ children }: { children: ReactNode }) {
 
   const fetchPage = useCallback(
     async (offset: number, limit: number) => {
-      if (mailbox.accountId === null) return api.allInboxes(Math.min(offset + limit, 200));
+      if (mailbox.accountId === null) {
+        const count = Math.min(offset + limit, 200);
+        return mailbox.folder === ALL_SENT ? api.allSent(count) : api.allInboxes(count);
+      }
       return api.messages(mailbox.accountId, { folder: mailbox.folder, offset, limit, q: query || undefined });
     },
     [api, mailbox, query],
@@ -102,6 +140,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
         loadingMore: false,
         error: null,
         accountErrors: page.errors ?? [],
+        updatedAt: new Date(),
       });
     } catch (e) {
       if (id !== requestId.current) return;
@@ -160,6 +199,15 @@ export function MailProvider({ children }: { children: ReactNode }) {
     setSelectedKey((k) => (k === key ? null : k));
   }, []);
 
+  useEffect(() => {
+    void loadJson<boolean>(GROUP_KEY).then((saved) => saved !== null && setGroupState(saved));
+  }, []);
+
+  const setGroupConversations = useCallback((on: boolean) => {
+    setGroupState(on);
+    void saveJson(GROUP_KEY, on);
+  }, []);
+
   const setMailbox = useCallback((next: Mailbox) => {
     setQuery("");
     setMailboxState((m) => (m.accountId === next.accountId && m.folder === next.folder ? m : next));
@@ -184,8 +232,32 @@ export function MailProvider({ children }: { children: ReactNode }) {
       removeMessage,
       selectedKey,
       setSelectedKey,
+      groupConversations,
+      setGroupConversations,
+      labels,
+      reloadLabels,
     }),
-    [accounts, accountsLoaded, reloadAccounts, folders, loadFolders, mailbox, setMailbox, query, list, refresh, loadMore, hasMore, updateMessage, removeMessage, selectedKey],
+    [
+      accounts,
+      accountsLoaded,
+      reloadAccounts,
+      folders,
+      loadFolders,
+      mailbox,
+      setMailbox,
+      query,
+      list,
+      refresh,
+      loadMore,
+      hasMore,
+      updateMessage,
+      removeMessage,
+      selectedKey,
+      groupConversations,
+      setGroupConversations,
+      labels,
+      reloadLabels,
+    ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
@@ -199,10 +271,70 @@ export function useMail(): MailState {
 /** Human title for the current mailbox. */
 export function useMailboxTitle(): string {
   const { mailbox, accounts, folders } = useMail();
-  if (mailbox.accountId === null) return "All inboxes";
+  if (mailbox.accountId === null) return mailbox.folder === ALL_SENT ? "All sent" : "All inboxes";
   const folder = folders[mailbox.accountId]?.find((f) => f.path === mailbox.folder);
   const name = folder?.name ?? (mailbox.folder === "INBOX" ? "Inbox" : mailbox.folder);
   if (accounts.length <= 1) return name;
   const account = accounts.find((a) => a.id === mailbox.accountId);
   return account ? `${name} · ${account.label}` : name;
+}
+
+/** A list row: the newest message of a conversation, or a single message when not grouping. */
+export interface Conversation {
+  latest: MessageHeader;
+  /** The conversation's messages in the list, newest first. */
+  members: MessageHeader[];
+  count: number;
+  /** Labels on any message of the conversation. */
+  labels: string[];
+  unread: boolean;
+  flagged: boolean;
+  /** You replied to a message of the conversation. */
+  answered: boolean;
+  hasAttachments: boolean;
+}
+
+/** Groups messages by conversation, most recent conversation first. */
+export function groupByConversation(messages: MessageHeader[], group: boolean): Conversation[] {
+  const single = (m: MessageHeader): Conversation => ({
+    latest: m,
+    members: [m],
+    count: 1,
+    labels: m.labels ?? [],
+    unread: !m.seen,
+    flagged: m.flagged,
+    answered: m.answered,
+    hasAttachments: m.hasAttachments,
+  });
+  if (!group) return messages.map(single);
+  const byThread = new Map<string, Conversation>();
+  for (const m of messages) {
+    const id = m.threadId ? `${m.accountId}:${m.threadId}` : messageKey(m);
+    const c = byThread.get(id);
+    if (!c) {
+      byThread.set(id, single(m));
+      continue;
+    }
+    c.count++;
+    c.members.push(m);
+    c.unread ||= !m.seen;
+    c.flagged ||= m.flagged;
+    c.answered ||= m.answered;
+    c.hasAttachments ||= m.hasAttachments;
+    for (const l of m.labels ?? []) if (!c.labels.includes(l)) c.labels.push(l);
+    if (Date.parse(m.date) > Date.parse(c.latest.date)) c.latest = m;
+  }
+  return [...byThread.values()].sort((a, b) => Date.parse(b.latest.date) - Date.parse(a.latest.date));
+}
+
+/**
+ * Color for a person's avatar: always the same for the same address. Mail from
+ * one of your accounts uses that account's color.
+ */
+export function useSenderColor(): (address: string) => string {
+  const { accounts } = useMail();
+  return useCallback(
+    (address: string) => accounts.find((a) => a.address.toLowerCase() === address.toLowerCase())?.color ?? paletteColor(address),
+    [accounts],
+  );
 }

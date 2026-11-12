@@ -6,15 +6,18 @@
   "exports": {
     ".": "./src/index.ts",
     "./presets": "./src/presets.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./signature": "./src/signature.ts"
   },
   "scripts": {
     "typecheck": "tsc"
   },
   "dependencies": {
+    "ical.js": "^2.2.1",
     "imapflow": "^2.10.0",
     "mailparser": "^3.14.1",
-    "nodemailer": "^10.3.1"
+    "nodemailer": "^10.3.1",
+    "tsdav": "^2.5.0"
   },
   "devDependencies": {
     "@types/mailparser": "*",

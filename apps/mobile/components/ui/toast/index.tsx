@@ -5,7 +5,7 @@ import { tva, useStyleContext, withStyleContext } from '@gluestack-ui/utils/nati
 import { cssInterop } from 'nativewind';
 import React from 'react';
 import { AccessibilityInfo, Text, View } from 'react-native';
-import Animated, { SlideInUp } from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 const useToast = createToastHook(View);
 const SCOPE = 'TOAST';
 const AnimatedView = Animated.createAnimatedComponent(View);
@@ -174,7 +174,7 @@ const Toast = React.forwardRef<React.ComponentRef<typeof Root>, IToastProps>(
     return (
       <Root
         ref={ref}
-        entering={SlideInUp}
+        entering={FadeInDown.duration(200)}
         className={toastStyle({ variant, action, class: className })}
         context={{ variant, action }}
         {...props}

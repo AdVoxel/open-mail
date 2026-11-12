@@ -12,19 +12,117 @@ export interface Address {
 export interface AccountInfo {
   id: AccountId;
   label: string;
+  /** The username it signs in with (can differ from `address`, e.g. when the address is an alias). */
+  login: string;
+  /** Hex color (#rrggbb) shown next to the account's mail. */
+  color: string;
+  /** HTML signature added to mail sent with `signature: true`. Empty when there is none. */
+  signature: string;
   address: string;
   /** Display name used in the From header. */
   name: string;
-  /** "env" accounts come from .env and can't be edited or removed from the apps. */
+  /** "env" accounts come from environment variables and can't be edited or removed from the apps. */
   source: "env" | "app";
   authType: AuthType;
   saveSentCopy: boolean;
   imapHost: string;
+  calendar: AccountCalendar;
+}
+
+/** Calendars the server can reach for an account: iCloud over CalDAV, Gmail over the Google Calendar API. */
+export type CalendarProvider = "icloud" | "google";
+
+export interface AccountCalendar {
+  /** null: this kind of account has no calendar support (yet). */
+  provider: CalendarProvider | null;
+  /** The user turned calendars on for this account. */
+  enabled: boolean;
+  /** The server can sign in: always for iCloud (app password), after "Connect Google Calendar" for Gmail. */
+  connected: boolean;
+  /** Calendar ids the user hid. */
+  hidden: string[];
+}
+
+export interface AccountCalendarUpdate {
+  enabled?: boolean;
+  hidden?: string[];
+}
+
+export interface CalendarInfo {
+  /** Provider id: the CalDAV collection URL, or the Google calendar id. */
+  id: string;
+  accountId: AccountId;
+  name: string;
+  /** Hex color (#rrggbb). */
+  color: string;
+  /** Events can't be added or changed (shared read-only, holidays…). */
+  readOnly: boolean;
+  /** Not hidden by the user. */
+  visible: boolean;
+}
+
+/**
+ * One event, or one occurrence of a repeating event. Times: ISO date-times;
+ * all-day events use dates (YYYY-MM-DD) with an exclusive end, never shifted by time zone.
+ */
+export interface CalendarEvent {
+  /** Provider id: CalDAV object URL (#occurrence for repeats), or the Google event id. */
+  id: string;
+  accountId: AccountId;
+  calendarId: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location: string;
+  description: string;
+  /** Part of a repeating series. */
+  recurring: boolean;
+  /** Has guests (changing it would notify them). */
+  hasAttendees: boolean;
+  /** Can be changed from the app: a single event, no guests, in a writable calendar. */
+  editable: boolean;
+  /** Alerts, in minutes before the start (0 = at the start). */
+  alerts: number[];
+  /** You're a guest (someone else organizes it): who invited you and your answer. */
+  invitation?: { organizer: string; status: InvitationStatus };
+}
+
+export type InvitationStatus = "needs-action" | "accepted" | "tentative" | "declined";
+/** What you can answer to an invitation. */
+export type InvitationResponse = "accepted" | "tentative" | "declined";
+
+/** An event alert that is due, as announced to the apps. */
+export interface EventReminder {
+  event: CalendarEvent;
+  minutesBefore: number;
+}
+
+/** A new event, or the new values of one (same time conventions as CalendarEvent). */
+export interface EventInput {
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  location?: string;
+  description?: string;
+}
+
+export interface CalendarPage {
+  calendars: CalendarInfo[];
+  /** Accounts whose calendars couldn't be read. */
+  errors: { accountId: AccountId; error: string }[];
+}
+
+export interface EventsPage {
+  events: CalendarEvent[];
+  errors: { accountId: AccountId; error: string }[];
 }
 
 /** A password-based account from the Add Account form (custom servers or a preset). */
 export interface AccountInput {
   label?: string;
+  color?: string;
   name?: string;
   address: string;
   user?: string; // defaults to the address
@@ -36,6 +134,8 @@ export interface AccountInput {
 
 export interface AccountUpdate {
   label?: string;
+  color?: string;
+  signature?: string;
   name?: string;
   saveSentCopy?: boolean;
 }
@@ -51,6 +151,14 @@ export interface Folder {
   unread: number | null;
 }
 
+/** A label the user can put on messages. */
+export interface MailLabel {
+  id: string;
+  name: string;
+  /** Hex color (#rrggbb). */
+  color: string;
+}
+
 export interface MessageHeader {
   accountId: AccountId;
   folder: string;
@@ -63,8 +171,22 @@ export interface MessageHeader {
   seen: boolean;
   flagged: boolean;
   answered: boolean;
+  /** Ids of the MailLabels on this message. */
+  labels: string[];
   hasAttachments: boolean;
   size: number;
+  /**
+   * Conversation id, unique within an account: the server's thread id (Gmail,
+   * OBJECTID servers) or else the first Message-ID of the References chain.
+   */
+  threadId?: string;
+}
+
+/** A message that just arrived in an inbox, as announced to the apps. */
+export interface NewMail {
+  message: MessageHeader;
+  /** The start of the text, for a notification. */
+  preview: string;
 }
 
 export interface MessagePage {
@@ -109,6 +231,25 @@ export interface OutgoingMail {
   inReplyTo?: string;
   references?: string[];
   attachments?: OutgoingAttachment[];
+  /** Add the account's signature when the mail goes out (also for scheduled mail). */
+  signature?: boolean;
+  /** In replies and forwards: above the quoted message (default) or at the very end. */
+  signaturePosition?: "before-quote" | "end";
+  /** Add an open-tracking pixel (see TrackingStore). */
+  track?: boolean;
+  /** Set by the server for tracked mail, to match the sent copy with its opens. */
+  messageId?: string;
+}
+
+/** How often a tracked message was opened (approximate: see TrackingStore). */
+export interface TrackingSummary {
+  /** The sent message's Message-ID. */
+  messageId: string;
+  opens: number;
+  firstOpen: string | null;
+  lastOpen: string | null;
+  /** Some opens look like Apple Mail's automatic image loading. */
+  appleProxy: boolean;
 }
 
 export type ScheduleStatus = "pending" | "sending" | "sent" | "failed";
