@@ -216,7 +216,7 @@ function MessageView({ message, onCollapse }: { message: MailMessage; onCollapse
 }
 
 /** Another message of the conversation: a one-line summary that opens in place. */
-function ThreadEntry({ header }: { header: MessageHeader }) {
+function ThreadEntry({ header, tracked }: { header: MessageHeader; tracked?: TrackingSummary }) {
   const api = useApi();
   const senderColor = useSenderColor();
   const colors = useColors();
@@ -251,6 +251,18 @@ function ThreadEntry({ header }: { header: MessageHeader }) {
             {header.to.length ? `To ${header.to.map(displayName).join(", ")}` : header.from.address}
           </Text>
         </View>
+        {tracked ? (
+          <OpensPopover tracked={tracked}>
+            <View className="flex-row items-center gap-0.5">
+              <Eye size={13} color={tracked.opens ? colors.accent : colors.muted} />
+              {tracked.opens ? (
+                <Text size="xs" style={{ color: colors.accent }}>
+                  {tracked.opens}
+                </Text>
+              ) : null}
+            </View>
+          </OpensPopover>
+        ) : null}
         {header.hasAttachments ? <Paperclip size={13} color={colors.muted} /> : null}
         <Text size="xs" className="text-muted-foreground">
           {formatListDate(header.date)}
@@ -285,6 +297,8 @@ export function Reader({
   const [labelPicker, setLabelPicker] = useState(false);
   const [message, setMessage] = useState<MailMessage | null>(null);
   const [thread, setThread] = useState<MessageHeader[] | null>(null);
+  // Opens of the conversation's tracked messages, by Message-ID, for the collapsed entries.
+  const [threadTracking, setThreadTracking] = useState<Map<string, TrackingSummary>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const markedRead = useRef(false);
@@ -321,6 +335,12 @@ export function Reader({
       (headers) => {
         if (cancelled) return;
         setThread(headers);
+        const ids = headers.map((h) => h.messageId).filter((id): id is string => Boolean(id));
+        if (ids.length > 1)
+          api.tracking(ids).then(
+            (list) => !cancelled && setThreadTracking(new Map(list.map((t) => [t.messageId, t]))),
+            () => undefined, // older servers: no badges
+          );
         if (!groupConversations) return;
         for (const h of headers) {
           const k = messageKey(h);
@@ -492,7 +512,7 @@ export function Reader({
 
         {entries.map((h, i) => (
           <View key={messageKey(h)} className={i > 0 ? "border-t border-border pt-5" : undefined}>
-            {messageKey(h) === key ? <MessageView message={message} /> : <ThreadEntry header={h} />}
+            {messageKey(h) === key ? <MessageView message={message} /> : <ThreadEntry header={h} tracked={h.messageId ? threadTracking.get(h.messageId) : undefined} />}
           </View>
         ))}
       </ScrollView>

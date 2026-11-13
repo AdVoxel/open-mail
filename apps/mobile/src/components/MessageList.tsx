@@ -33,6 +33,7 @@ import { useMessageActions } from "@/src/lib/useMessageActions";
 import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading } from "./kit";
 import { OpensPopover } from "./OpensPopover";
 import { SwipeRow, useJustSwiped } from "./SwipeRow";
+import { Tooltip } from "./Tooltip";
 
 const Row = memo(function Row({
   conversation,
@@ -143,11 +144,15 @@ const Row = memo(function Row({
             </OpensPopover>
           ) : null}
           {answered ? (
-            <View accessibilityLabel="Replied">
+            <Tooltip label="You replied to this message">
               <CheckCheck size={14} color={colors.accent} />
-            </View>
+            </Tooltip>
           ) : null}
-          {hasAttachments ? <Paperclip size={13} color={colors.muted} /> : null}
+          {hasAttachments ? (
+            <Tooltip label="Has attachments">
+              <Paperclip size={13} color={colors.muted} />
+            </Tooltip>
+          ) : null}
           {flagged ? <Star size={13} color={colors.star} fill={colors.star} /> : null}
         </View>
         {labels.length ? (

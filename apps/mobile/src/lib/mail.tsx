@@ -309,7 +309,7 @@ export interface Conversation {
   labels: string[];
   unread: boolean;
   flagged: boolean;
-  /** You replied to a message of the conversation. */
+  /** You replied to the conversation's latest message (an older reply doesn't count once newer mail came in). */
   answered: boolean;
   hasAttachments: boolean;
 }
@@ -365,11 +365,11 @@ export function groupByConversation(messages: MessageHeader[], group: boolean): 
     c.members.push(m);
     c.unread ||= !m.seen;
     c.flagged ||= m.flagged;
-    c.answered ||= m.answered;
     c.hasAttachments ||= m.hasAttachments;
     for (const l of m.labels ?? []) if (!c.labels.includes(l)) c.labels.push(l);
     if (Date.parse(m.date) > Date.parse(c.latest.date)) c.latest = m;
   }
+  for (const c of byThread.values()) c.answered = c.latest.answered;
   return [...byThread.values()].sort((a, b) => Date.parse(b.latest.date) - Date.parse(a.latest.date));
 }
 
