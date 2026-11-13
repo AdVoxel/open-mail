@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from "react";
-import { Animated, PanResponder, Platform, Pressable as RNPressable, StyleSheet, View } from "react-native";
+import { Animated, Easing, PanResponder, Platform, Pressable as RNPressable, StyleSheet, View } from "react-native";
 import { Mail, MailOpen, Trash2 } from "lucide-react-native";
 import { Text } from "@/components/ui/text";
 import { useColors } from "@/src/lib/theme";
@@ -8,6 +8,10 @@ import { useColors } from "@/src/lib/theme";
 const REVEAL = 88;
 /** How far a right swipe must go to toggle read. */
 const READ_TRIGGER = 80;
+/** How far a left swipe must go to delete: half the row, but never more than this. */
+const DELETE_TRIGGER_MAX = 200;
+/** Release speed (px/ms) that counts as a flick, completing the swipe the way it was going. */
+const FLICK = 0.5;
 const useNativeDriver = Platform.OS !== "web";
 
 const SwipeGuard = createContext<() => boolean>(() => false);
@@ -49,42 +53,58 @@ export function SwipeRow({
   handlers.current = { onToggleRead, onDelete };
 
   const responder = useMemo(() => {
-    const settle = (to: number) => {
+    /** Where the row was when last let go, so a delete slides only the rest of the way. */
+    const currentX = { current: 0 };
+    /** Slides to `to`, carrying on at the speed the finger let go with (px/ms). */
+    const settle = (to: number, velocity = 0) => {
       rest.current = to;
       setOpen(to !== 0);
-      Animated.spring(x, { toValue: to, useNativeDriver, bounciness: 0, speed: 20 }).start();
+      Animated.spring(x, { toValue: to, velocity, useNativeDriver, overshootClamping: true, stiffness: 400, damping: 40, mass: 1 }).start();
     };
-    const remove = () => {
-      Animated.timing(x, { toValue: -width.current, duration: 160, useNativeDriver }).start(() => {
+    const remove = (velocity = 0) => {
+      rest.current = -width.current;
+      setOpen(false);
+      // Faster flicks leave faster; never slower than a short slide.
+      const remaining = Math.max(0, width.current - Math.abs(currentX.current));
+      const duration = Math.min(200, Math.max(90, remaining / Math.max(Math.abs(velocity), 1.5)));
+      Animated.timing(x, { toValue: -width.current, duration, easing: Easing.out(Easing.quad), useNativeDriver }).start(() => {
         void handlers.current.onDelete().then((deleted) => !deleted && settle(0));
       });
     };
+    /** Where the row was let go (or the gesture taken away): finish the swipe it was making. */
+    const finish = (dx: number, vx: number) => {
+      swipedAt.current = Date.now();
+      const pos = Math.max(-width.current, Math.min(rest.current + dx, width.current * 0.4));
+      currentX.current = pos;
+      const deleteAt = -Math.min(width.current / 2, DELETE_TRIGGER_MAX);
+      if (pos > READ_TRIGGER || (vx > FLICK && pos > READ_TRIGGER / 3 && rest.current === 0)) {
+        settle(0, vx);
+        handlers.current.onToggleRead();
+      } else if (pos < deleteAt || (vx < -FLICK * 2 && pos < -REVEAL)) {
+        remove(vx);
+      } else if (vx < -FLICK / 2 && pos < 0) {
+        settle(-REVEAL, vx); // a flick towards Delete shows it
+      } else if (vx > FLICK / 2) {
+        settle(0, vx); // a flick back closes it
+      } else {
+        settle(pos < -REVEAL / 2 ? -REVEAL : 0, vx);
+      }
+    };
     return {
       settle,
-      remove,
+      remove: () => remove(),
       pan: PanResponder.create({
         // Only clearly horizontal drags; vertical ones keep scrolling the list.
-        onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+        onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+        onPanResponderGrant: () => x.stopAnimation(),
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_e, g) => {
           const pos = rest.current + g.dx;
           x.setValue(Math.max(-width.current, Math.min(pos, width.current * 0.4)));
         },
-        onPanResponderRelease: (_e, g) => {
-          swipedAt.current = Date.now();
-          const pos = rest.current + g.dx;
-          if (pos > READ_TRIGGER) {
-            settle(0);
-            handlers.current.onToggleRead();
-          } else if (pos < -width.current / 2) {
-            remove();
-          } else if (pos < -REVEAL / 2) {
-            settle(-REVEAL);
-          } else {
-            settle(0);
-          }
-        },
-        onPanResponderTerminate: () => settle(rest.current),
+        onPanResponderRelease: (_e, g) => finish(g.dx, g.vx),
+        // Taken away mid-swipe (the list or the browser claimed the touch): still finish what was meant.
+        onPanResponderTerminate: (_e, g) => finish(g.dx, g.vx),
       }),
     };
   }, [x]);
@@ -126,8 +146,8 @@ export function SwipeRow({
         style={{ transform: [{ translateX: x }], backgroundColor: colors.background }}
         {...responder.pan.panHandlers}
       >
-        {/* No text selection while dragging with the mouse. */}
-        <View className="web:select-none">
+        {/* No text selection while dragging with the mouse; the browser only scrolls vertically, leaving sideways drags to the row. */}
+        <View className="web:select-none web:touch-pan-y">
           <SwipeGuard.Provider value={justSwiped}>{children}</SwipeGuard.Provider>
         </View>
         {/* While Delete is showing, a tap on the row closes it instead of opening the message. */}

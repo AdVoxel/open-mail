@@ -31,6 +31,7 @@ import { ALL_SENT, groupByConversation, useMail, useMailboxTitle, type Conversat
 import { useColors } from "@/src/lib/theme";
 import { useMessageActions } from "@/src/lib/useMessageActions";
 import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading } from "./kit";
+import { OpensPopover } from "./OpensPopover";
 import { SwipeRow, useJustSwiped } from "./SwipeRow";
 
 const Row = memo(function Row({
@@ -69,6 +70,8 @@ const Row = memo(function Row({
   const { latest: message, count, unread, flagged, answered, hasAttachments } = conversation;
   const labels = allLabels.filter((l) => conversation.labels.includes(l.id));
   const showBox = selecting || checked || rowHovered || boxHovered;
+  // Unread rows get a wash of the accent color; selected and ticked rows keep their own highlight.
+  const tinted = unread && !selected && !checked;
   return (
     <Pressable
       onPress={() => {
@@ -79,8 +82,9 @@ const Row = memo(function Row({
       onLongPress={() => onToggleSelect(conversation)}
       onHoverIn={() => setRowHovered(true)}
       onHoverOut={() => setRowHovered(false)}
+      style={tinted ? { backgroundColor: rowHovered ? colors.unreadHover : colors.unread } : undefined}
       className={`flex-row gap-3 border-b border-border/60 py-3 pl-3 pr-4 ${
-        selected || checked ? "bg-accent" : "data-[hover=true]:bg-accent/50"
+        selected || checked ? "bg-accent" : tinted ? "" : "data-[hover=true]:bg-accent/50"
       }`}
     >
       <View className="w-5 items-center pt-0.5">
@@ -127,17 +131,16 @@ const Row = memo(function Row({
             {message.subject}
           </Text>
           {tracked ? (
-            <View
-              className="flex-row items-center gap-0.5"
-              accessibilityLabel={tracked.opens ? `Opened ${tracked.opens} times` : "Tracked, not opened yet"}
-            >
-              <Eye size={13} color={tracked.opens ? colors.accent : colors.muted} />
-              {tracked.opens ? (
-                <Text size="xs" style={{ color: colors.accent }}>
-                  {tracked.opens}
-                </Text>
-              ) : null}
-            </View>
+            <OpensPopover tracked={tracked}>
+              <View className="flex-row items-center gap-0.5">
+                <Eye size={13} color={tracked.opens ? colors.accent : colors.muted} />
+                {tracked.opens ? (
+                  <Text size="xs" style={{ color: colors.accent }}>
+                    {tracked.opens}
+                  </Text>
+                ) : null}
+              </View>
+            </OpensPopover>
           ) : null}
           {answered ? (
             <View accessibilityLabel="Replied">

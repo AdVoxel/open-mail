@@ -250,6 +250,27 @@ export interface TrackingSummary {
   lastOpen: string | null;
   /** Some opens look like Apple Mail's automatic image loading. */
   appleProxy: boolean;
+  /** Each open, newest first (older servers: absent). */
+  events?: TrackingOpen[];
+}
+
+/** One load of the tracking pixel. */
+export interface TrackingOpen {
+  at: string;
+  /** The mail app that loaded it, as far as its user agent tells: "Outlook 16", "Gmail", "Chrome"… */
+  client: string;
+  /** The system it runs on, when the user agent says: "Windows", "iPhone", "macOS"… */
+  device?: string;
+  /** Address the image was fetched from. For proxied opens, it's the mail provider's, not the reader's. */
+  ip?: string;
+  /**
+   * Fetched by the mail provider on the reader's behalf (Gmail, Apple Mail Privacy
+   * Protection, Yahoo): the ip and device say nothing about the reader, and with
+   * Apple it may not even mean the message was read.
+   */
+  proxied: boolean;
+  /** The raw user agent, for anything the summary above missed. */
+  agent?: string;
 }
 
 export type ScheduleStatus = "pending" | "sending" | "sent" | "failed";

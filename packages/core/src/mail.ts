@@ -12,6 +12,7 @@ import type { ConfigStore, StoredAccount } from "./config.js";
 import { refreshGoogleAccessToken, signInWithGoogle, type GoogleClient, type GoogleClientSource } from "./google-oauth.js";
 import { GMAIL_PRESET, MAIL_PRESETS, paletteColor, type HostConfig } from "./presets.js";
 import { applySignature } from "./signature.js";
+import { subjectKey } from "./subject.js";
 import { labelKeyword, labelsFromFlags } from "./labels.js";
 import { zip } from "./zip.js";
 import { TRACKING_PIXEL } from "./tracking.js";
@@ -534,8 +535,10 @@ export class MailService {
       if (!msg) throw new MailError(404, `Message ${uid} not found in ${folder}`);
       return { target: toHeader(id, folder, msg), gmail: imap.capabilities.has("X-GM-EXT-1"), serverThreads: Boolean(msg.threadId) };
     });
+    // Same thread, or same subject (without Re:/Fwd: prefixes): the list groups both ways.
     const threadId = target.threadId;
-    if (!threadId) return [target];
+    const subject = subjectKey(target.subject);
+    if (!threadId && !subject) return [target];
 
     const folders = new Set([folder]);
     const all = gmail ? await this.folderForRole(id, ["all"]) : undefined;
@@ -546,19 +549,29 @@ export class MailService {
       if (sent) folders.add(sent.path);
     }
 
-    const criteria: SearchObject = serverThreads
-      ? { threadId }
-      : { or: [{ header: { "message-id": threadId } }, { header: { references: threadId } }, { header: { "in-reply-to": threadId } }] };
+    const searches: SearchObject[] = [];
+    if (threadId)
+      searches.push(
+        serverThreads
+          ? { threadId }
+          : { or: [{ header: { "message-id": threadId } }, { header: { references: threadId } }, { header: { "in-reply-to": threadId } }] },
+      );
+    // IMAP subject search is a case-insensitive substring match; the exact key is checked below.
+    if (subject) searches.push({ subject });
+    const belongs = (h: MessageHeader) => (threadId !== undefined && h.threadId === threadId) || (subject !== "" && subjectKey(h.subject) === subject);
+
     const found: MessageHeader[] = [target];
     for (const path of folders) {
       try {
         const headers = await this.withFolder(id, path, async (imap) => {
-          const uids = ((await imap.search(criteria, { uid: true })) || []).sort((a, b) => b - a).slice(0, THREAD_LIMIT);
+          const matched = new Set<number>();
+          for (const criteria of searches) for (const uid of (await imap.search(criteria, { uid: true })) || []) matched.add(uid);
+          const uids = [...matched].sort((a, b) => b - a).slice(0, THREAD_LIMIT);
           const out: MessageHeader[] = [];
           if (uids.length) for await (const msg of imap.fetch(uids.join(","), HEADER_FIELDS, { uid: true })) out.push(toHeader(id, path, msg));
           return out;
         });
-        found.push(...headers.filter((h) => h.threadId === threadId));
+        found.push(...headers.filter(belongs));
       } catch (err) {
         // The conversation is still worth showing without the other folders.
         if (path === folder) throw err;

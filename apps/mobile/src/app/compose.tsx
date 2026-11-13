@@ -598,6 +598,7 @@ export default function ComposeScreen() {
             }}
             autoFocus={mode === "reply" || mode === "replyAll"}
             placeholder="Write your message…"
+            signature={withSignature && signature ? { html: signature, position: signaturePosition } : null}
           />
 
           {signature ? (
@@ -620,7 +621,8 @@ export default function ComposeScreen() {
                   />
                 </View>
               ) : null}
-              {withSignature ? <SignaturePreview html={signature} /> : null}
+              {/* Web and desktop show it inside the text, where it will go. */}
+              {withSignature && Platform.OS !== "web" ? <SignaturePreview html={signature} /> : null}
             </View>
           ) : null}
 

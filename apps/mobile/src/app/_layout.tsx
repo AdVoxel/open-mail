@@ -20,6 +20,7 @@ import { useIsWide } from "@/src/lib/format";
 import { MailProvider } from "@/src/lib/mail";
 import { NotificationsProvider } from "@/src/lib/notifications";
 import { ThemeModeProvider, useColors } from "@/src/lib/theme";
+import { useUnreadBadge } from "@/src/lib/unread";
 
 function Screens() {
   const colors = useColors();
@@ -61,6 +62,12 @@ function Sidebar() {
   );
 }
 
+/** Web: the unread count on the browser's tab icon, checked by the service worker. */
+function UnreadBadge() {
+  useUnreadBadge();
+  return null;
+}
+
 function Shell() {
   const { status } = useConnection();
   const isWide = useIsWide();
@@ -70,6 +77,7 @@ function Shell() {
 
   return (
     <MailProvider>
+      <UnreadBadge />
       <LockProvider>
       <NotificationsProvider>
         <DraftsProvider>

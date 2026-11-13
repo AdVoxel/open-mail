@@ -661,7 +661,7 @@ export function startServer({
     // The open-tracking pixel: public (recipients load it), always the same image.
     const pixel = req.method === "GET" && /^\/t\/([0-9a-f]{32})\.gif$/.exec(url.pathname);
     if (pixel) {
-      tracking.recordOpen(pixel[1]!, req.headers["user-agent"]);
+      tracking.recordOpen(pixel[1]!, req.headers["user-agent"], clientIp(req));
       // Every way of saying "don't keep this": each open should reach the server again.
       res.writeHead(200, {
         "Content-Type": "image/gif",
@@ -772,4 +772,20 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   } catch {
     throw new HttpError(400, "Body must be JSON");
   }
+}
+
+/**
+ * The address a request came from. Behind the nginx proxy that's X-Real-IP, or
+ * the last X-Forwarded-For entry (the one nginx itself saw); else the socket's.
+ */
+function clientIp(req: IncomingMessage): string | undefined {
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return Array.isArray(value) ? value.join(",") : value;
+  };
+  const real = header("x-real-ip")?.trim();
+  if (real) return real;
+  const forwarded = header("x-forwarded-for")?.split(",").map((s) => s.trim()).filter(Boolean);
+  if (forwarded?.length) return forwarded.at(-1);
+  return req.socket.remoteAddress?.replace(/^::ffff:/, "");
 }

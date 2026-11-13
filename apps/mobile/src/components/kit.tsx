@@ -121,7 +121,8 @@ export function Header({
 }) {
   const insets = useSafeAreaInsets();
   return (
-    <View style={{ paddingTop: safeTop ? insets.top : 0 }} className="border-b border-border bg-background">
+    // Above what follows, so the buttons' tooltips (which hang below the bar) aren't painted over.
+    <View style={{ paddingTop: safeTop ? insets.top : 0, zIndex: 10 }} className="border-b border-border bg-background">
       <View className="h-14 flex-row items-center gap-1 px-3">
         {left}
         <View className="min-w-0 flex-1 px-1">

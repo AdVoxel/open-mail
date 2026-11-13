@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeJsonAtomic } from "./config.js";
 import { escapeHtml } from "./signature.js";
-import type { AccountId, OutgoingMail, TrackingSummary } from "./types.js";
+import type { AccountId, OutgoingMail, TrackingOpen, TrackingSummary } from "./types.js";
 
 const KEEP_DAYS = 365;
 const MAX_OPENS = 100;
@@ -25,7 +25,7 @@ interface TrackedMessage {
   to: string;
   subject: string;
   createdAt: string;
-  opens: { at: string; agent?: string }[];
+  opens: { at: string; agent?: string; ip?: string }[];
 }
 
 export class TrackingStore {
@@ -57,10 +57,10 @@ export class TrackingStore {
   }
 
   /** The pixel was loaded. Unknown ids are ignored (the image is served either way). */
-  recordOpen(id: string, agent: string | undefined): void {
+  recordOpen(id: string, agent: string | undefined, ip?: string): void {
     const record = this.records.find((r) => r.id === id);
     if (!record || Date.now() - Date.parse(record.createdAt) < IGNORE_FIRST_MS) return;
-    record.opens.push({ at: new Date().toISOString(), agent: agent?.slice(0, 200) });
+    record.opens.push({ at: new Date().toISOString(), agent: agent?.slice(0, 300), ip: ip?.slice(0, 64) });
     if (record.opens.length > MAX_OPENS) record.opens.splice(0, record.opens.length - MAX_OPENS);
     this.save();
   }
@@ -78,6 +78,50 @@ export class TrackingStore {
         // Apple's Mail Privacy Protection loads images on delivery, not when read.
         // Its fetches say only "Mozilla/5.0"; Apple Mail itself sends a full user agent.
         appleProxy: r.opens.some((o) => o.agent === "Mozilla/5.0"),
+        events: r.opens.map((o) => ({ at: o.at, ip: o.ip, agent: o.agent, ...describeAgent(o.agent) })).reverse(),
       }));
   }
+}
+
+/**
+ * What a pixel fetch's user agent says about who loaded it. Mail providers that
+ * fetch images themselves are recognized first: their fetches carry the
+ * provider's address and agent, not the reader's.
+ */
+export function describeAgent(agent: string | undefined): Pick<TrackingOpen, "client" | "device" | "proxied"> {
+  const ua = agent?.trim() ?? "";
+  if (!ua) return { client: "Unknown", proxied: false };
+  if (/GoogleImageProxy|ggpht\.com/i.test(ua)) return { client: "Gmail", proxied: true };
+  // Apple's Mail Privacy Protection: the bare "Mozilla/5.0", from Apple's relays.
+  if (ua === "Mozilla/5.0") return { client: "Apple Mail (privacy protection)", proxied: true };
+  if (/YahooMailProxy/i.test(ua)) return { client: "Yahoo Mail", proxied: true };
+
+  const device = deviceOf(ua);
+  const version = (re: RegExp) => re.exec(ua)?.[1];
+  if (/Outlook-iOS|Outlook-Android/i.test(ua)) return { client: "Outlook mobile", device, proxied: false };
+  if (/Microsoft Outlook|ms-office|MSOffice|Microsoft Office/i.test(ua)) {
+    const v = version(/(?:Microsoft Outlook|Microsoft Office|MSOffice)[ /](\d+)/i);
+    return { client: v ? `Outlook ${v}` : "Outlook", device, proxied: false };
+  }
+  if (/Thunderbird/i.test(ua)) return { client: `Thunderbird${version(/Thunderbird\/(\d+)/) ? ` ${version(/Thunderbird\/(\d+)/)}` : ""}`, device, proxied: false };
+  // Webmail in a browser: the browser's name.
+  if (/Edg\//.test(ua)) return { client: "Edge (webmail)", device, proxied: false };
+  if (/OPR\//.test(ua)) return { client: "Opera (webmail)", device, proxied: false };
+  if (/Firefox\//.test(ua)) return { client: "Firefox (webmail)", device, proxied: false };
+  if (/Chrome\//.test(ua)) return { client: "Chrome (webmail)", device, proxied: false };
+  if (/Version\/[\d.]+.*Safari\//.test(ua)) return { client: "Safari (webmail)", device, proxied: false };
+  // WebKit without a browser name: Apple Mail itself (privacy protection off).
+  if (/AppleWebKit/.test(ua) && /Macintosh|iPhone|iPad/.test(ua)) return { client: "Apple Mail", device, proxied: false };
+  return { client: ua.split(/[\s/;(]/)[0] || "Unknown", device, proxied: false };
+}
+
+function deviceOf(ua: string): string | undefined {
+  if (/iPhone/i.test(ua)) return "iPhone";
+  if (/iPad/i.test(ua)) return "iPad";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Windows/.test(ua)) return "Windows";
+  if (/Macintosh|Mac OS X/.test(ua)) return "macOS";
+  if (/CrOS/.test(ua)) return "ChromeOS";
+  if (/Linux/.test(ua)) return "Linux";
+  return undefined;
 }

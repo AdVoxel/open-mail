@@ -102,7 +102,7 @@ echo "Uploading to $target…"
 # The ones rewritten above keep their names when only the CDN address changes, so they
 # aren't cached (and their CDN copies are flushed below). HTML goes last, so the live
 # page never points at files that aren't there yet.
-excludes=(--exclude '*.html' --exclude 'metadata.json')
+excludes=(--exclude '*.html' --exclude 'metadata.json' --exclude 'sw.js')
 for file in "${rewritten[@]}"; do excludes+=(--exclude "$file"); done
 s3 sync --no-delete-removed --guess-mime-type --no-mime-magic "${excludes[@]}" \
   --add-header="Cache-Control: public, max-age=31536000, immutable" "$out/" "$target/"
@@ -111,9 +111,15 @@ for file in "${rewritten[@]}"; do
   s3 put --mime-type="$type" --add-header="Cache-Control: no-cache" "$out/$file" "$target/$file"
 done
 
+# The service worker keeps its name: never cached, so browsers pick up a new one.
+# mail.advoxel.com must serve it at /sw.js (its nginx proxies that path here, not to index.html).
+if [ -f "$out/sw.js" ]; then
+  s3 put --mime-type=text/javascript --add-header="Cache-Control: no-cache" "$out/sw.js" "$target/sw.js"
+fi
+
 # HTML: never cached, so a new deploy shows up right away.
 html=(--mime-type=text/html --add-header="Cache-Control: no-cache, no-store, must-revalidate")
-html_keys=("$prefix/index.html")
+html_keys=("$prefix/index.html" "$prefix/sw.js")
 for file in "${rewritten[@]}"; do html_keys+=("$prefix/$file"); done
 s3 put "${html[@]}" "$out/index.html" "$target/index.html"
 

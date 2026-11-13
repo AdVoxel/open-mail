@@ -11,6 +11,11 @@ export interface RichEditorProps {
   onChange: (html: string | null, text: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
+  /**
+   * Web/desktop: shows the signature inside the text where it will go (read-only,
+   * never part of `onChange`; the server adds the real one when sending).
+   */
+  signature?: { html: string; position: "before-quote" | "end" } | null;
 }
 
 /** Phones: a plain text box for now (formatting is web/desktop only, see RichEditor.web.tsx). */

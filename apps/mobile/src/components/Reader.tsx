@@ -38,6 +38,7 @@ import { AttachmentPreview, canPreview } from "./AttachmentPreview";
 import { saveFile } from "./download";
 import { ErrorBanner, Header, IconButton, Initials, LabelChip, Loading, useConfirm, useNotify } from "./kit";
 import { MessageBody } from "./MessageBody";
+import { OpensPopover } from "./OpensPopover";
 
 function AddressLine({ label, list }: { label: string; list: Address[] }) {
   if (!list.length) return null;
@@ -111,7 +112,8 @@ function MessageView({ message, onCollapse }: { message: MailMessage; onCollapse
 
   return (
     <View className="gap-5">
-      <Pressable disabled={!onCollapse} onPress={onCollapse} className="flex-row gap-3">
+      <View className="flex-row items-start gap-2">
+      <Pressable disabled={!onCollapse} onPress={onCollapse} className="min-w-0 flex-1 flex-row gap-3">
         <Initials name={displayName(message.from)} size={40} color={senderColor(message.from.address)} />
         <View className="min-w-0 flex-1 gap-0.5">
           <View className="flex-row flex-wrap items-baseline gap-x-2">
@@ -126,17 +128,28 @@ function MessageView({ message, onCollapse }: { message: MailMessage; onCollapse
             {formatFullDate(message.date)}
           </Text>
           {tracked ? (
-            <View className="flex-row items-center gap-1 pt-0.5">
-              <Eye size={12} color={tracked.opens ? colors.accent : colors.muted} />
-              <Text size="xs" style={tracked.opens ? { color: colors.accent } : undefined} className={tracked.opens ? "" : "text-muted-foreground"}>
-                {tracked.opens
-                  ? `Opened ${tracked.opens}× · first ${when(tracked.firstOpen!)}${tracked.opens > 1 ? ` · last ${when(tracked.lastOpen!)}` : ""}${tracked.appleProxy ? " · may include Apple Mail loading images by itself" : ""}`
-                  : "Tracked · not opened yet"}
-              </Text>
+            <View className="flex-row pt-0.5">
+              <OpensPopover tracked={tracked}>
+                <View className="flex-row items-center gap-1">
+                  <Eye size={12} color={tracked.opens ? colors.accent : colors.muted} />
+                  <Text size="xs" style={tracked.opens ? { color: colors.accent } : undefined} className={tracked.opens ? "" : "text-muted-foreground"}>
+                    {tracked.opens
+                      ? `Opened ${tracked.opens}× · first ${when(tracked.firstOpen!)}${tracked.opens > 1 ? ` · last ${when(tracked.lastOpen!)}` : ""}${tracked.appleProxy ? " · may include Apple Mail loading images by itself" : ""}`
+                      : "Tracked · not opened yet"}
+                  </Text>
+                </View>
+              </OpensPopover>
             </View>
           ) : null}
         </View>
       </Pressable>
+        {/* The same actions as below the message, without scrolling down to them. */}
+        <View className="flex-row items-center">
+          <IconButton icon={Reply} label="Reply" onPress={() => compose("reply")} />
+          {message.to.length + message.cc.length > 1 ? <IconButton icon={ReplyAll} label="Reply all" onPress={() => compose("replyAll")} /> : null}
+          <IconButton icon={Forward} label="Forward" onPress={() => compose("forward")} />
+        </View>
+      </View>
 
       {message.attachments.some((a) => !a.inline) ? (
         <View className="flex-row flex-wrap gap-2">
@@ -228,7 +241,7 @@ function ThreadEntry({ header }: { header: MessageHeader }) {
 
   return (
     <View className="gap-2">
-      <Pressable onPress={() => setOpen((o) => !o)} className="flex-row items-center gap-3 rounded-lg data-[hover=true]:bg-accent/50">
+      <Pressable onPress={() => setOpen((o) => !o)} className="-mx-3 flex-row items-center gap-3 rounded-xl px-3 py-3 data-[hover=true]:bg-accent/50">
         <Initials name={displayName(header.from)} size={32} color={senderColor(header.from.address)} />
         <View className="min-w-0 flex-1">
           <Text numberOfLines={1} className={header.seen ? "text-foreground/80" : "font-semibold"}>

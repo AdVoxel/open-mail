@@ -28,6 +28,7 @@ import type {
 // Presets are plain data, safe to bundle into the apps.
 export * from "@mail-app/core/presets";
 export { draftToHtml, hasQuote, signatureText, stripQuote } from "@mail-app/core/signature";
+export { subjectKey } from "@mail-app/core/subject";
 export type * from "@mail-app/core/types";
 
 export interface Capabilities {

@@ -5,6 +5,7 @@ export { checkGoogleClient, type GoogleClient, type GoogleClientSource } from ".
 export { MailError, MailService, describe, type ListOptions } from "./mail.js";
 export { Scheduler, type ScheduleUpdate, type SchedulerOptions } from "./scheduler.js";
 export { applySignature, draftToHtml, hasQuote, signatureText, stripQuote } from "./signature.js";
+export { subjectKey } from "./subject.js";
 export { LabelStore, labelKeyword, labelsFromFlags } from "./labels.js";
 export { NewMailWatcher } from "./watcher.js";
 export { CalendarService } from "./calendar.js";

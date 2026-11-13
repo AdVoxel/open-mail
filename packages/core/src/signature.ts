@@ -32,8 +32,8 @@ export function stripQuote(html: string | null, text: string): { html: string | 
 
 /**
  * A draft's plain text (as replyDraft/forwardDraft write it) as editor HTML:
- * what's written as paragraphs, the quoted part in a `div.quoted`, replies'
- * "> " lines as a blockquote.
+ * what's written as paragraphs, the quoted part in a `div.quoted` (in italics,
+ * also in the mail sent), replies' "> " lines as a blockquote.
  */
 export function draftToHtml(text: string): string {
   const lines = (part: string) => part.split("\n").map((line) => escapeHtml(line) || "<br>");
@@ -48,7 +48,7 @@ export function draftToHtml(text: string): string {
   const body = isReply
     ? `<blockquote style="margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex">${inline(rest.map((l) => l.replace(/^> ?/, "")).join("\n"))}</blockquote>`
     : `<div>${inline(rest.join("\n"))}</div>`;
-  return `${html || "<div><br></div>"}<div><br></div><div class="quoted"><div>${escapeHtml(intro ?? "")}</div>${body}</div>`;
+  return `${html || "<div><br></div>"}<div><br></div><div class="quoted" style="font-style:italic"><div>${escapeHtml(intro ?? "")}</div>${body}</div>`;
 }
 
 /** A readable plain-text version of an HTML signature. */

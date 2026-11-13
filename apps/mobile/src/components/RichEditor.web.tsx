@@ -8,6 +8,7 @@ import {
   List,
   ListOrdered,
   RemoveFormatting,
+  Smile,
   Strikethrough,
   TextQuote,
   Underline,
@@ -24,7 +25,37 @@ const PLACEHOLDER_STYLE = `
   [data-rich-editor] ul { list-style: disc; }
   [data-rich-editor] ol { list-style: decimal; }
   [data-rich-editor] a { color: var(--rich-editor-link); text-decoration: underline; }
+  [data-rich-editor] [data-signature-preview] { margin: 1em 0; padding-top: 0.5em; border-top: 1px dashed var(--rich-editor-border); opacity: 0.8; cursor: default; user-select: none; }
 `;
+
+/** Emojis offered in the toolbar (the system's emoji picker has the rest). */
+const EMOJIS = [
+  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "🙂", "😉", "😍", "🥰", "😘", "😎", "🤩",
+  "🤔", "🤨", "😐", "🙄", "😏", "😴", "😌", "😬", "😢", "😭", "😤", "😡", "🤯", "😱", "🥳", "🤗",
+  "👍", "👎", "👌", "✌️", "🤞", "👏", "🙌", "🙏", "💪", "👋", "🤝", "✍️", "👀", "🧠", "💡", "🔥",
+  "❤️", "🧡", "💛", "💚", "💙", "💜", "💯", "✨", "⭐", "🎉", "🎂", "🎁", "☕", "🍕", "🍻", "🥂",
+  "✅", "❌", "⚠️", "❓", "❗", "📌", "📎", "📅", "📞", "📧", "💼", "📈", "🚀", "⏰", "🌞", "🌧️",
+];
+
+/**
+ * The signature as a read-only block inside the text. Only what can't run or
+ * restyle the app is kept: it's the account's own signature, shown in the page.
+ */
+function signatureNode(html: string): HTMLElement {
+  const node = document.createElement("div");
+  node.dataset.signaturePreview = "";
+  node.contentEditable = "false";
+  node.title = "Your signature, where it will go (change it in Settings)";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, link, meta, iframe, object, embed, form").forEach((el) => el.remove());
+  doc.querySelectorAll("*").forEach((el) => {
+    for (const attr of [...el.attributes]) {
+      if (/^on/i.test(attr.name) || /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+    }
+  });
+  node.append(...doc.body.childNodes);
+  return node;
+}
 
 /** Generic CSS families only: every device and mail client has a font for each. */
 const TYPEFACES = [
@@ -50,22 +81,61 @@ const FORMATS: Format[] = ["bold", "italic", "underline", "strikeThrough", "inse
  * Uncontrolled: `initialHtml` is read once (remount with a new `key` to load
  * another draft); changes come back through `onChange`.
  */
-export function RichEditor({ initialHtml, onChange, placeholder, autoFocus }: RichEditorProps) {
+export function RichEditor({ initialHtml, onChange, placeholder, autoFocus, signature }: RichEditorProps) {
   const colors = useColors();
   const ref = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const [active, setActive] = useState<Partial<Record<Format | "quote", boolean>>>({});
   const [linkOpen, setLinkOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [typeface, setTypeface] = useState<Typeface>("sans-serif");
   const [linkUrl, setLinkUrl] = useState("https://");
+  const signatureRef = useRef(signature);
+  signatureRef.current = signature;
+  const shownSignature = useRef<string | null>(null);
 
+  /** Puts the signature preview where it will go: above the quoted message, or at the very end. */
+  const placeSignature = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const wanted = signatureRef.current;
+    let node = el.querySelector<HTMLElement>("[data-signature-preview]");
+    if (!wanted?.html) {
+      node?.remove();
+      shownSignature.current = null;
+      return;
+    }
+    if (!node || shownSignature.current !== wanted.html) {
+      node?.remove();
+      node = signatureNode(wanted.html);
+      shownSignature.current = wanted.html;
+    }
+    const quoted = wanted.position === "before-quote" ? el.querySelector<HTMLElement>("div.quoted") : null;
+    if (quoted?.parentNode) {
+      if (node.nextSibling !== quoted) quoted.parentNode.insertBefore(node, quoted);
+    } else if (el.lastChild !== node) {
+      el.appendChild(node);
+    }
+  }, []);
+
+  /** Reports the text without the signature preview (the server adds the real signature). */
   const emit = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    const empty = !el.innerText.trim() && !el.querySelector("img, li, blockquote");
+    placeSignature(); // select-all and delete can take it out
+    const preview = el.querySelector<HTMLElement>("[data-signature-preview]");
+    if (preview) preview.style.display = "none";
+    const text = el.innerText;
+    if (preview) preview.style.display = "";
+    const copy = el.cloneNode(true) as HTMLElement;
+    copy.querySelector("[data-signature-preview]")?.remove();
+    const empty = !text.trim() && !copy.querySelector("img, li, blockquote");
     el.dataset.empty = String(empty);
-    onChange(empty ? "" : el.innerHTML, empty ? "" : el.innerText);
-  }, [onChange]);
+    onChange(empty ? "" : copy.innerHTML, empty ? "" : text);
+  }, [onChange, placeSignature]);
+
+  // Signature turned on or off, another From account, or another position.
+  useEffect(placeSignature, [placeSignature, signature?.html, signature?.position]);
 
   // Load the draft once, put the cursor at the start (replies type above the quote).
   useEffect(() => {
@@ -126,7 +196,30 @@ export function RichEditor({ initialHtml, onChange, placeholder, autoFocus }: Ri
     exec("fontName", value);
   };
 
+  const openEmoji = () => {
+    rememberSelection();
+    setLinkOpen(false);
+    setEmojiOpen((open) => !open);
+  };
+
+  const insertEmoji = (emoji: string) => {
+    const el = ref.current;
+    const selection = window.getSelection();
+    if (!el || !selection) return;
+    // The panel doesn't take focus, so the cursor is usually still in the text.
+    if (!el.contains(selection.anchorNode)) {
+      const range = savedRange.current ?? document.createRange();
+      // Never typed in yet: at the start, above any quoted message.
+      if (!savedRange.current) range.setStart(el.firstElementChild ?? el, 0);
+      el.focus();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    exec("insertText", emoji);
+  };
+
   const openLink = () => {
+    setEmojiOpen(false);
     const selection = window.getSelection();
     savedRange.current = selection && selection.rangeCount && ref.current?.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
     setLinkUrl("https://");
@@ -195,6 +288,7 @@ export function RichEditor({ initialHtml, onChange, placeholder, autoFocus }: Ri
           {tool(ListOrdered, "Numbered list", () => exec("insertOrderedList"), active.insertOrderedList)}
           {tool(TextQuote, "Quote", () => exec("formatBlock", active.quote ? "div" : "blockquote"), active.quote)}
           {tool(Link, "Link", openLink, linkOpen)}
+          {tool(Smile, "Emoji", openEmoji, emojiOpen)}
           <View className="mx-1 h-5 w-px bg-border" />
           {tool(RemoveFormatting, "Clear formatting", () => {
             exec("removeFormat");
@@ -218,6 +312,28 @@ export function RichEditor({ initialHtml, onChange, placeholder, autoFocus }: Ri
             </View>
           ) : null}
         </View>
+        {emojiOpen ? (
+          <div
+            role="listbox"
+            aria-label="Emoji"
+            style={{ display: "flex", flexWrap: "wrap", gap: 2, padding: "6px 0", borderBottom: `1px solid ${colors.border}` }}
+          >
+            {EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                role="option"
+                aria-label={emoji}
+                onClick={() => insertEmoji(emoji)}
+                style={{ width: 34, height: 34, fontSize: 20, lineHeight: "34px", border: "none", borderRadius: 8, background: "transparent", cursor: "pointer" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = colors.border)}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div
         ref={ref}

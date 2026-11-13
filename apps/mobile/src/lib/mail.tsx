@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppState } from "react-native";
-import { messageKey, paletteColor, type AccountInfo, type Folder, type MailLabel, type MessageHeader } from "@mail-app/api-client";
+import { messageKey, paletteColor, subjectKey, type AccountInfo, type Folder, type MailLabel, type MessageHeader } from "@mail-app/api-client";
 import { useApi } from "./connection";
 import { loadJson, saveJson } from "./storage";
 
@@ -49,11 +49,18 @@ interface MailState {
   /** Show one list row per conversation instead of one per message. */
   groupConversations: boolean;
   setGroupConversations: (on: boolean) => void;
+  /** How often to check for new mail, in seconds. */
+  checkInterval: CheckInterval;
+  setCheckInterval: (seconds: CheckInterval) => void;
 }
+
+/** Choices for how often to check for new mail, in seconds. */
+export const CHECK_INTERVALS = [30, 60, 120, 300, 900, 1800] as const;
+export type CheckInterval = (typeof CHECK_INTERVALS)[number];
 
 const PAGE = 50;
 const GROUP_KEY = "mail.groupConversations";
-const AUTO_REFRESH_MS = 60_000;
+const INTERVAL_KEY = "mail.checkInterval";
 const EMPTY: ListState = { messages: [], total: 0, loading: true, loadingMore: false, error: null, accountErrors: [], updatedAt: null };
 const Context = createContext<MailState | null>(null);
 
@@ -67,6 +74,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<ListState>(EMPTY);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [groupConversations, setGroupState] = useState(true);
+  const [checkInterval, setIntervalState] = useState<CheckInterval>(60);
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const requestId = useRef(0);
   const loaded = useRef(0); // how many messages are currently loaded, for refresh
@@ -162,9 +170,9 @@ export function MailProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const timer = setInterval(() => {
       if (AppState.currentState === "active") void refresh();
-    }, AUTO_REFRESH_MS);
+    }, checkInterval * 1000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, checkInterval]);
 
   useEffect(() => {
     void reloadAccounts().catch(() => setAccountsLoaded(true));
@@ -201,6 +209,14 @@ export function MailProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void loadJson<boolean>(GROUP_KEY).then((saved) => saved !== null && setGroupState(saved));
+    void loadJson<number>(INTERVAL_KEY).then(
+      (saved) => saved !== null && (CHECK_INTERVALS as readonly number[]).includes(saved) && setIntervalState(saved as CheckInterval),
+    );
+  }, []);
+
+  const setCheckInterval = useCallback((seconds: CheckInterval) => {
+    setIntervalState(seconds);
+    void saveJson(INTERVAL_KEY, seconds);
   }, []);
 
   const setGroupConversations = useCallback((on: boolean) => {
@@ -234,6 +250,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       setSelectedKey,
       groupConversations,
       setGroupConversations,
+      checkInterval,
+      setCheckInterval,
       labels,
       reloadLabels,
     }),
@@ -255,6 +273,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       selectedKey,
       groupConversations,
       setGroupConversations,
+      checkInterval,
+      setCheckInterval,
       labels,
       reloadLabels,
     ],
@@ -307,9 +327,35 @@ export function groupByConversation(messages: MessageHeader[], group: boolean): 
     hasAttachments: m.hasAttachments,
   });
   if (!group) return messages.map(single);
+
+  // Messages belong together when they share a thread id or a subject (without
+  // Re:/Fwd: prefixes). Union-find over those keys, so links chain across both.
+  const parent = new Map<string, string>();
+  const root = (k: string): string => {
+    let r = k;
+    while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!;
+    for (let n = k; n !== r; ) {
+      const next = parent.get(n)!;
+      parent.set(n, r);
+      n = next;
+    }
+    return r;
+  };
+  const keysOf = (m: MessageHeader): string[] => {
+    const keys = [m.threadId ? `t:${m.accountId}:${m.threadId}` : `m:${messageKey(m)}`];
+    const subject = subjectKey(m.subject);
+    if (subject) keys.push(`s:${m.accountId}:${subject}`);
+    return keys;
+  };
+  for (const m of messages) {
+    const [first, ...rest] = keysOf(m).map(root);
+    parent.set(first, first);
+    for (const k of rest) parent.set(k, first);
+  }
+
   const byThread = new Map<string, Conversation>();
   for (const m of messages) {
-    const id = m.threadId ? `${m.accountId}:${m.threadId}` : messageKey(m);
+    const id = root(keysOf(m)[0]);
     const c = byThread.get(id);
     if (!c) {
       byThread.set(id, single(m));

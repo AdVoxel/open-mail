@@ -32,12 +32,12 @@ import {
 } from "@/src/components/kit";
 import { useApi, useConnection } from "@/src/lib/connection";
 import { useIsWide } from "@/src/lib/format";
-import { useMail } from "@/src/lib/mail";
+import { CHECK_INTERVALS, useMail, type CheckInterval } from "@/src/lib/mail";
 import { AUTO_LOCK_OPTIONS, useLock, type AutoLock } from "@/src/lib/lock";
 import { useNotifications } from "@/src/lib/notifications";
 import { SEND_DELAYS, useSendDelay, type SendDelay } from "@/src/lib/sendDelay";
 import { useAutoDrafts, useTrackOpens } from "@/src/lib/composePrefs";
-import { useColors, useThemeMode } from "@/src/lib/theme";
+import { ACCENTS, useColors, useThemeMode } from "@/src/lib/theme";
 
 const inputClass = "h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground font-sans web:outline-none";
 
@@ -698,11 +698,54 @@ function LabelsSection() {
   );
 }
 
+// ------------------------------------------------------------ appearance
+
+function AccentPicker() {
+  const { accent, setAccent } = useThemeMode();
+  const { dark } = useColors();
+  return (
+    <View className="gap-2">
+      <View>
+        <Text size="sm" className="font-medium">
+          Accent color
+        </Text>
+        <Text size="xs" className="text-muted-foreground">
+          The background of unread messages, and the app's highlights.
+        </Text>
+      </View>
+      <View className="flex-row flex-wrap gap-2">
+        {ACCENTS.map((a) => {
+          const color = dark ? a.dark : a.light;
+          const on = a.id === accent.id;
+          return (
+            <Pressable
+              key={a.id}
+              onPress={() => setAccent(a.id)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={a.label}
+              style={{ backgroundColor: color }}
+              className={`h-8 w-8 items-center justify-center rounded-full ${on ? "border-2 border-foreground" : ""}`}
+            >
+              {on ? <Check size={16} color="#ffffff" strokeWidth={3} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/** "30 s", "1 min", "15 min". */
+function intervalLabel(seconds: number): string {
+  return seconds < 60 ? `${seconds} s` : `${seconds / 60} min`;
+}
+
 // ---------------------------------------------------------------- screen
 
 export default function SettingsScreen() {
   const isWide = useIsWide();
-  const { accounts, groupConversations, setGroupConversations } = useMail();
+  const { accounts, groupConversations, setGroupConversations, checkInterval, setCheckInterval } = useMail();
   const { mode, setMode } = useThemeMode();
 
   return (
@@ -735,13 +778,29 @@ export default function SettingsScreen() {
         </Card>
 
         <SectionTitle>Reading</SectionTitle>
-        <Card className="p-4">
+        <Card className="gap-3 p-4">
           <ToggleRow
             label="Group by conversation"
             hint="One row per conversation in the message list, most recent first."
             value={groupConversations}
             onChange={setGroupConversations}
           />
+          <View>
+            <Text size="sm" className="font-medium">
+              Check for new mail every
+            </Text>
+            <Text size="xs" className="text-muted-foreground">
+              Refreshes the list and the unread count on the browser tab's icon. In the browser a service worker does the
+              checking, also while the tab is in the background.
+            </Text>
+          </View>
+          <View className="items-start">
+            <Segmented
+              value={String(checkInterval)}
+              onChange={(value) => setCheckInterval(Number(value) as CheckInterval)}
+              options={CHECK_INTERVALS.map((s) => ({ value: String(s), label: intervalLabel(s) }))}
+            />
+          </View>
         </Card>
 
         <SectionTitle>Screen lock</SectionTitle>
@@ -757,17 +816,20 @@ export default function SettingsScreen() {
         <LabelsSection />
 
         <SectionTitle>Appearance</SectionTitle>
-        <View className="items-start">
-          <Segmented
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: "system", label: "System" },
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
-            ]}
-          />
-        </View>
+        <Card className="gap-4 p-4">
+          <View className="items-start">
+            <Segmented
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "system", label: "System" },
+                { value: "light", label: "Light" },
+                { value: "dark", label: "Dark" },
+              ]}
+            />
+          </View>
+          <AccentPicker />
+        </Card>
       </ScrollView>
     </KeyboardAvoidingView>
   );

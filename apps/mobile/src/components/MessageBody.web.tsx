@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { MailMessage } from "@mail-app/api-client";
+import { View } from "react-native";
+import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
 import { blockContextMenu } from "@/src/lib/contextMenu";
+import { foldQuotes, splitQuotedText } from "@/src/lib/quotes";
 
 const BASE_STYLE = `
   <base target="_blank">
@@ -11,7 +14,34 @@ const BASE_STYLE = `
     img { max-width: 100%; height: auto; }
     table { max-width: 100%; }
     pre { white-space: pre-wrap; }
+    /* Quoted history, when shown: a clear line between the earlier messages. */
+    blockquote[type="cite"], blockquote.gmail_quote { margin: 8px 0 !important; padding: 0 0 0 12px !important; border-left: 3px solid #d4d4d4 !important; color: #444; }
+    div[style*="border-top"][style*="padding:3.0pt"], div[style*="border-top"][style*="padding: 3pt"] {
+      border-top: 2px solid #c8c8c8 !important; margin-top: 18px !important; padding-top: 10px !important;
+    }
+    #divRplyFwdMsg, #appendonsend + hr, hr#stopSpelling { margin-top: 18px !important; }
   </style>`;
+
+/**
+ * "Show quoted text" / "Hide quoted text". It floats at the bottom of the
+ * screen while you scroll through the message, so it's always at hand.
+ */
+function QuoteToggle({ shown, onPress }: { shown: boolean; onPress: () => void }) {
+  return (
+    <div style={{ position: "sticky", bottom: 12, zIndex: 2, display: "flex", marginTop: 8, pointerEvents: "none" }}>
+      <div style={{ pointerEvents: "auto" }}>
+        <Pressable
+          onPress={onPress}
+          className="rounded-full border border-border bg-background px-3 py-1 shadow-hard-2 data-[hover=true]:bg-accent"
+        >
+          <Text size="xs" className="font-medium text-muted-foreground">
+            {shown ? "Hide quoted text" : "••• Show quoted text"}
+          </Text>
+        </Pressable>
+      </div>
+    </div>
+  );
+}
 
 /**
  * HTML mail in a sandboxed iframe: scripts never run, links open in the
@@ -21,6 +51,10 @@ const BASE_STYLE = `
 export function MessageBody({ message }: { message: MailMessage }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(200);
+  // The earlier messages a reply quotes are folded away until asked for.
+  const fold = useRef<((show: boolean) => void) | null>(null);
+  const [hasQuote, setHasQuote] = useState(false);
+  const [quoteShown, setQuoteShown] = useState(false);
 
   useEffect(() => {
     const frame = ref.current;
@@ -31,6 +65,10 @@ export function MessageBody({ message }: { message: MailMessage }) {
       if (doc?.documentElement) setHeight(Math.max(80, doc.documentElement.scrollHeight));
     };
     const onLoad = () => {
+      const doc = frame.contentDocument;
+      fold.current = doc ? foldQuotes(doc) : null;
+      setHasQuote(Boolean(fold.current));
+      setQuoteShown(false);
       measure();
       // Events inside the message don't reach the app's own listener.
       frame.contentDocument?.addEventListener("contextmenu", blockContextMenu);
@@ -47,11 +85,23 @@ export function MessageBody({ message }: { message: MailMessage }) {
     };
   }, [message.html]);
 
+  const toggleQuote = () => {
+    const next = !quoteShown;
+    fold.current?.(next);
+    setQuoteShown(next);
+    const doc = ref.current?.contentDocument;
+    if (doc?.documentElement) setHeight(Math.max(80, doc.documentElement.scrollHeight));
+  };
+
   if (!message.html) {
+    const split = splitQuotedText(message.text);
     return (
-      <Text selectable className="text-[15px] leading-6 text-foreground">
-        {message.text || "(empty message)"}
-      </Text>
+      <View>
+        <Text selectable className="text-[15px] leading-6 text-foreground">
+          {(split && !quoteShown ? split.fresh : message.text) || "(empty message)"}
+        </Text>
+        {split ? <QuoteToggle shown={quoteShown} onPress={() => setQuoteShown((s) => !s)} /> : null}
+      </View>
     );
   }
 
@@ -64,6 +114,7 @@ export function MessageBody({ message }: { message: MailMessage }) {
         srcDoc={BASE_STYLE + message.html}
         style={{ width: "100%", height, border: 0, display: "block", background: "#fff" }}
       />
+      {hasQuote ? <QuoteToggle shown={quoteShown} onPress={toggleQuote} /> : null}
     </div>
   );
 }
