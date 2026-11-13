@@ -11,6 +11,9 @@ const BASE_STYLE = `
   <style>
     html, body { margin: 0; padding: 0; background: #fff; color: #111; }
     body { font: 14px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 4px 2px; overflow-wrap: anywhere; }
+    /* The frame is sized to the body, so the body must be only as tall as its content (floats included). */
+    html, body { height: auto !important; min-height: 0 !important; }
+    body { display: flow-root; }
     img { max-width: 100%; height: auto; }
     table { max-width: 100%; }
     pre { white-space: pre-wrap; }
@@ -44,6 +47,19 @@ function QuoteToggle({ shown, onPress }: { shown: boolean; onPress: () => void }
 }
 
 /**
+ * How tall the message's content is. Not the document's scrollHeight: that is
+ * never less than the frame itself, so the frame could grow but never shrink
+ * (hiding quoted text left it big).
+ */
+function contentHeight(frame: HTMLIFrameElement): number {
+  const body = frame.contentDocument?.body;
+  if (!body) return 80;
+  const style = frame.contentWindow?.getComputedStyle(body);
+  const margins = style ? (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0) : 0;
+  return Math.max(80, Math.ceil(body.getBoundingClientRect().height + margins));
+}
+
+/**
  * HTML mail in a sandboxed iframe: scripts never run, links open in the
  * system browser. `allow-same-origin` (without scripts) only lets us measure
  * the content height so the reader scrolls as one page.
@@ -60,10 +76,7 @@ export function MessageBody({ message }: { message: MailMessage }) {
     const frame = ref.current;
     if (!frame || !message.html) return;
     let observer: ResizeObserver | undefined;
-    const measure = () => {
-      const doc = frame.contentDocument;
-      if (doc?.documentElement) setHeight(Math.max(80, doc.documentElement.scrollHeight));
-    };
+    const measure = () => setHeight(contentHeight(frame));
     const onLoad = () => {
       const doc = frame.contentDocument;
       fold.current = doc ? foldQuotes(doc) : null;
@@ -89,8 +102,7 @@ export function MessageBody({ message }: { message: MailMessage }) {
     const next = !quoteShown;
     fold.current?.(next);
     setQuoteShown(next);
-    const doc = ref.current?.contentDocument;
-    if (doc?.documentElement) setHeight(Math.max(80, doc.documentElement.scrollHeight));
+    if (ref.current) setHeight(contentHeight(ref.current));
   };
 
   if (!message.html) {

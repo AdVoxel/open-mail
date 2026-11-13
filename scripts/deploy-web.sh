@@ -60,7 +60,12 @@ public_base="${PUBLIC_BASE_URL:-https://cdn.advoxel.com/$prefix}"
 public_base="${public_base%/}"
 
 echo "Building the web app (opened at ${base_path:-/}, files from $public_base)…"
-(cd "$repo/apps/mobile" && WEB_BASE_URL="$base_path" npx expo export --platform web --output-dir "$out" --clear >/dev/null)
+# Shown at the bottom of the sidebar as v<major.minor>.<build number> · <commit>:
+# the build number is the commit count (every commit bumps it); "+" marks uncommitted changes.
+build_number="$(git -C "$repo" rev-list --count HEAD 2>/dev/null || echo 0)"
+build_id="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ] && build_id="$build_id+"
+(cd "$repo/apps/mobile" && EXPO_PUBLIC_BUILD_NUMBER="$build_number" EXPO_PUBLIC_BUILD_ID="$build_id" WEB_BASE_URL="$base_path" npx expo export --platform web --output-dir "$out" --clear >/dev/null)
 [ -f "$out/index.html" ] || { echo "The build produced no index.html" >&2; exit 1; }
 
 # Everything the app loads comes from the CDN by its full address: the page's own
