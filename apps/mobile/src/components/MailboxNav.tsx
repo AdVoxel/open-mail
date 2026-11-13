@@ -25,6 +25,7 @@ import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
 import { useLock } from "@/src/lib/lock";
+import { useScheduledCount } from "@/src/lib/scheduledCount";
 import { ALL_SENT, useMail, type Mailbox } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
 import { ColorDot, IconButton, type Icon } from "./kit";
@@ -83,6 +84,7 @@ function NavItem({
 export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void; showCompose?: boolean }) {
   const { accounts, folders, loadFolders, mailbox, setMailbox } = useMail();
   const pathname = usePathname();
+  const scheduledCount = useScheduledCount(); // waiting to be sent, send delay included
   const colors = useColors();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const onMail = pathname === "/" || pathname === "/message";
@@ -164,10 +166,9 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
 
         <View className="my-4 h-px bg-border" />
         <NavItem icon={CalendarDays} label="Calendar" active={pathname === "/calendar" || pathname === "/event"} onPress={() => go("/calendar")} />
-        <NavItem icon={Clock} label="Scheduled" active={pathname === "/scheduled"} onPress={() => go("/scheduled")} />
-        <NavItem icon={Settings} label="Settings" active={pathname === "/settings"} onPress={() => go("/settings")} />
+        <NavItem icon={Clock} label="Scheduled" count={scheduledCount} active={pathname === "/scheduled"} onPress={() => go("/scheduled")} />
       </ScrollView>
-      <NavFooter onSetUpLock={() => go("/settings")} />
+      <NavFooter onSettings={() => go("/settings")} settingsActive={pathname === "/settings"} />
     </View>
   );
 }
@@ -184,15 +185,18 @@ const VERSION = (() => {
   return [version, process.env.EXPO_PUBLIC_BUILD_ID].filter(Boolean).join(" · ");
 })();
 
-/** Bottom of the sidebar: the version, and a button to lock the app now. */
-function NavFooter({ onSetUpLock }: { onSetUpLock: () => void }) {
+/** Bottom of the sidebar: the version, then Settings and a button to lock the app now. */
+function NavFooter({ onSettings, settingsActive }: { onSettings: () => void; settingsActive: boolean }) {
   const { enabled, lock } = useLock();
   return (
     <View className="h-12 flex-row items-center justify-between border-t border-border px-3">
       <Text size="xs" selectable className="text-muted-foreground">
         {VERSION ? `v${VERSION}` : ""}
       </Text>
-      <IconButton icon={Lock} label={enabled ? "Lock now" : "Set up a lock password"} onPress={enabled ? lock : onSetUpLock} />
+      <View className="flex-row items-center gap-0.5">
+        <IconButton icon={Settings} label="Settings" active={settingsActive} onPress={onSettings} tooltipAbove />
+        <IconButton icon={Lock} label={enabled ? "Lock now" : "Set up a lock password"} onPress={enabled ? lock : onSettings} tooltipAbove />
+      </View>
     </View>
   );
 }

@@ -24,6 +24,7 @@ import { SchedulePicker } from "@/src/components/SchedulePicker";
 import { useApi, useConnection } from "@/src/lib/connection";
 import { formatSize, formatWhen } from "@/src/lib/format";
 import { useDrafts, type ComposeParams, type MinimizedDraft } from "@/src/lib/drafts";
+import { refreshScheduled } from "@/src/lib/scheduledCount";
 import { useSendDelay } from "@/src/lib/sendDelay";
 import { useAutoDrafts, useSignaturePosition, useTrackOpens } from "@/src/lib/composePrefs";
 import { useMail } from "@/src/lib/mail";
@@ -354,6 +355,7 @@ export default function ComposeScreen() {
     setBusy(true);
     try {
       const done = await action();
+      void refreshScheduled(); // the count on "Scheduled" in the sidebar
       void dropDraft();
       if (typeof done === "string") notify(done);
       else notify(done.title, done.description, "info", done.options);
@@ -371,6 +373,7 @@ export default function ComposeScreen() {
       const item = await api.scheduledItem(scheduledId);
       if (item.status !== "pending") throw new Error(item.status);
       await api.cancelScheduled(scheduledId);
+      void refreshScheduled();
     } catch {
       notify("Too late to undo", "The message was already sent.", "error");
       return;
@@ -380,6 +383,22 @@ export default function ComposeScreen() {
     const id = drafts.minimize({ ...draft, params: reopened, sendAt: undefined });
     const routeParams = Object.fromEntries(Object.entries({ ...reopened, draft: id }).filter(([, v]) => v !== undefined));
     router.push({ pathname: "/compose", params: routeParams });
+  };
+
+  /** "Send now" on the send-delay notice: skip the rest of the delay. */
+  const sendImmediately = async (scheduledId: string) => {
+    try {
+      const result = await api.sendScheduledNow(scheduledId);
+      if (result.status !== "sent") throw new Error(result.error ?? "Sending failed");
+      notify("Message sent");
+    } catch (e) {
+      // Already gone by itself in the meantime: that's what was asked.
+      const item = await api.scheduledItem(scheduledId).catch(() => null);
+      if (item?.status === "sent") notify("Message sent");
+      else notify("Not sent", (e as Error).message, "error");
+    } finally {
+      void refreshScheduled();
+    }
   };
 
   const sendNow = () =>
@@ -399,7 +418,13 @@ export default function ComposeScreen() {
         return {
           title: `Sending in ${sendDelay} seconds`,
           description: subject.trim() || undefined,
-          options: { duration: sendDelay * 1000, action: { label: "Undo", onPress: () => void undoSend(scheduledId, draft) } },
+          options: {
+            duration: sendDelay * 1000,
+            actions: [
+              { label: "Undo", onPress: () => void undoSend(scheduledId, draft) },
+              { label: "Send now", onPress: () => void sendImmediately(scheduledId) },
+            ],
+          },
         };
       }
       if (mode === "edit" && params.scheduledId) {

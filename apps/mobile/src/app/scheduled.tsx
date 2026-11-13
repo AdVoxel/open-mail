@@ -9,6 +9,7 @@ import { Card, EmptyState, ErrorBanner, Header, IconButton, Loading, SectionTitl
 import { useApi } from "@/src/lib/connection";
 import { formatWhen, useIsWide } from "@/src/lib/format";
 import { useMail } from "@/src/lib/mail";
+import { refreshScheduled } from "@/src/lib/scheduledCount";
 import { useColors } from "@/src/lib/theme";
 
 function StatusBadge({ item }: { item: ScheduledMail }) {
@@ -114,6 +115,7 @@ export default function ScheduledScreen() {
     setRefreshing(true);
     try {
       setItems(await api.scheduled());
+      void refreshScheduled(); // keep the sidebar count in step after a cancel or send
       setError(null);
     } catch (e) {
       setError((e as Error).message);

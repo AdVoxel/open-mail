@@ -30,6 +30,7 @@ export function IconButton({
   active,
   disabled,
   size = 18,
+  tooltipAbove = false,
 }: {
   icon: Icon;
   onPress: () => void;
@@ -38,6 +39,8 @@ export function IconButton({
   active?: boolean;
   disabled?: boolean;
   size?: number;
+  /** Show the tooltip above the button (for buttons at the bottom of the screen). */
+  tooltipAbove?: boolean;
 }) {
   const colors = useColors();
   const tooltip = useTooltip();
@@ -62,7 +65,7 @@ export function IconButton({
       {tooltip.side ? (
         <View
           pointerEvents="none"
-          style={{ position: "absolute", top: "100%", marginTop: 4, zIndex: 50, ...(tooltip.side === "right" ? { right: 0 } : tooltip.side === "left" ? { left: 0 } : { left: "50%", transform: [{ translateX: "-50%" }] }) }}
+          style={{ position: "absolute", ...(tooltipAbove ? { bottom: "100%", marginBottom: 4 } : { top: "100%", marginTop: 4 }), zIndex: 50, ...(tooltip.side === "right" ? { right: 0 } : tooltip.side === "left" ? { left: 0 } : { left: "50%", transform: [{ translateX: "-50%" }] }) }}
           className="rounded-md bg-foreground px-2 py-1"
         >
           <Text size="xs" className="font-medium text-background web:whitespace-nowrap">
@@ -281,6 +284,8 @@ export function Segmented<T extends string>({
 export interface NotifyOptions {
   /** A button in the notice, e.g. Undo. Pressing it closes the notice. */
   action?: { label: string; onPress: () => void };
+  /** Several buttons, e.g. Undo and Send now. Pressing one closes the notice. */
+  actions?: { label: string; onPress: () => void }[];
   /** How long it stays, in ms. */
   duration?: number;
 }
@@ -300,19 +305,20 @@ export function useNotify() {
               </ToastTitle>
               {description ? <ToastDescription size="sm">{description}</ToastDescription> : null}
             </View>
-            {options.action ? (
+            {[...(options.action ? [options.action] : []), ...(options.actions ?? [])].map((a) => (
               <Button
+                key={a.label}
                 size="sm"
                 variant="outline"
                 className="rounded-lg"
                 onPress={() => {
                   toast.close(id);
-                  options.action!.onPress();
+                  a.onPress();
                 }}
               >
-                <ButtonText>{options.action.label}</ButtonText>
+                <ButtonText>{a.label}</ButtonText>
               </Button>
-            ) : null}
+            ))}
           </Toast>
         ),
       });
