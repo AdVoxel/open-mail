@@ -62,6 +62,8 @@ const server = startServer({
   calendars,
   tracking: new TrackingStore(join(dataDir, "tracking.json")),
   publicUrl: process.env.MAIL_APP_PUBLIC_URL || undefined,
+  // The web app's address(es), comma-separated: its own image loads aren't counted as opens.
+  appOrigins: (process.env.MAIL_APP_WEB_ORIGINS ?? "https://mail.advoxel.com").split(",").map((s) => s.trim()).filter(Boolean),
   googleClient: {
     status: () => ({
       configured: Boolean(google()),

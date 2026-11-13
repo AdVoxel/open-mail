@@ -8,7 +8,8 @@
     "./presets": "./src/presets.ts",
     "./types": "./src/types.ts",
     "./signature": "./src/signature.ts",
-    "./subject": "./src/subject.ts"
+    "./subject": "./src/subject.ts",
+    "./pixel": "./src/pixel.ts"
   },
   "scripts": {
     "typecheck": "tsc"

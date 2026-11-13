@@ -33,6 +33,8 @@ export interface ServerOptions {
   tracking: TrackingStore;
   /** Where recipients reach this server (for the tracking pixel); else taken from the request. */
   publicUrl?: string;
+  /** Where the web app runs (e.g. https://mail.advoxel.com): pixel loads from its pages aren't opens. */
+  appOrigins?: string[];
   version?: string;
 }
 
@@ -217,6 +219,7 @@ export function startServer({
   googleClient,
   tracking,
   publicUrl,
+  appOrigins = [],
   version = "dev",
 }: ServerOptions): Server {
   /** The address recipients use to reach this server: MAIL_APP_PUBLIC_URL, else what the app called (behind a proxy too). */
@@ -661,7 +664,8 @@ export function startServer({
     // The open-tracking pixel: public (recipients load it), always the same image.
     const pixel = req.method === "GET" && /^\/t\/([0-9a-f]{32})\.gif$/.exec(url.pathname);
     if (pixel) {
-      tracking.recordOpen(pixel[1]!, req.headers["user-agent"], clientIp(req));
+      // Loaded inside this app (you reading your own mail): served, never counted.
+      if (!fromApp(req, appOrigins)) tracking.recordOpen(pixel[1]!, req.headers["user-agent"], clientIp(req));
       // Every way of saying "don't keep this": each open should reach the server again.
       res.writeHead(200, {
         "Content-Type": "image/gif",
@@ -788,4 +792,28 @@ function clientIp(req: IncomingMessage): string | undefined {
   const forwarded = header("x-forwarded-for")?.split(",").map((s) => s.trim()).filter(Boolean);
   if (forwarded?.length) return forwarded.at(-1);
   return req.socket.remoteAddress?.replace(/^::ffff:/, "");
+}
+
+/**
+ * The request came from a page of this app: its Referer (or Origin) is one of
+ * `appOrigins`, or a copy running on this machine (localhost, a dev build).
+ * Mail apps send neither header, and webmail sends its own site.
+ */
+function fromApp(req: IncomingMessage, appOrigins: string[]): boolean {
+  const source = String(req.headers.referer ?? req.headers.origin ?? "");
+  if (!source) return false;
+  let host: string;
+  try {
+    host = new URL(source).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host.endsWith(".localhost")) return true;
+  return appOrigins.some((origin) => {
+    try {
+      return new URL(origin).hostname.toLowerCase() === host;
+    } catch {
+      return origin.toLowerCase() === host;
+    }
+  });
 }

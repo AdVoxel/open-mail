@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { MailMessage } from "@mail-app/api-client";
+import { stripTrackingPixel, type MailMessage } from "@mail-app/api-client";
 import { View } from "react-native";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
@@ -123,7 +123,7 @@ export function MessageBody({ message }: { message: MailMessage }) {
         ref={ref}
         title="Message"
         sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-        srcDoc={BASE_STYLE + message.html}
+        srcDoc={BASE_STYLE + stripTrackingPixel(message.html)} // a tracking image never loads while you read
         style={{ width: "100%", height, border: 0, display: "block", background: "#fff" }}
       />
       {hasQuote ? <QuoteToggle shown={quoteShown} onPress={toggleQuote} /> : null}

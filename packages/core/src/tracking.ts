@@ -16,7 +16,7 @@ const IGNORE_FIRST_MS = 10_000;
 export const TRACKING_GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
 
 /** The pixel's address in a message (to remove it when showing your own copy). */
-export const TRACKING_PIXEL = /<img\b[^>]*\/t\/[0-9a-f]{32}\.gif[^>]*>/gi;
+export { TRACKING_PIXEL } from "./pixel.js";
 
 interface TrackedMessage {
   id: string;

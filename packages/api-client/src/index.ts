@@ -29,6 +29,7 @@ import type {
 export * from "@mail-app/core/presets";
 export { draftToHtml, hasQuote, signatureText, stripQuote } from "@mail-app/core/signature";
 export { subjectKey } from "@mail-app/core/subject";
+export { stripTrackingPixel } from "@mail-app/core/pixel";
 export type * from "@mail-app/core/types";
 
 export interface Capabilities {

@@ -17,6 +17,7 @@ The server reads all of its keys from the process environment. It doesn't load a
 | `MAIL_APP_PORT` | `8787` | Port to listen on. |
 | `MAIL_APP_DATA_DIR` | `server/data` | Where `accounts.json`, `scheduled.json`, `labels.json`, `lock.json` and `tracking.json` are kept. Set it to a path outside the repository on the server, e.g. `/var/lib/open-mail`. |
 | `MAIL_APP_PUBLIC_URL` | taken from the request | The address recipients reach the server at, e.g. `https://apimail.advoxel.com`, for the open-tracking image. Behind a reverse proxy, also route `/t/` to the server (not only `/api/`). |
+| `MAIL_APP_WEB_ORIGINS` | `https://mail.advoxel.com` | Where the web app is opened, comma-separated. Tracking-image loads from its pages (and from `localhost`) are you reading your own mail, so they're never counted as opens. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | unset | Enables "Sign in with Google" (Desktop-app OAuth client, `https://mail.google.com/` scope). Only works when the browser runs on the server machine. |
 | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | unset | Gmail account defined by the environment instead of added from the apps. |
 | `ICLOUD_USER`, `ICLOUD_APP_PASSWORD` | unset | Same, for iCloud. |
