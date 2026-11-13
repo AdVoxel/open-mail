@@ -5,7 +5,8 @@ import type { TrackingSummary } from "@mail-app/api-client";
 import { useColors } from "@/src/lib/theme";
 import { OpensList } from "./OpensList";
 
-const WIDTH = 380;
+/** Fits time, app and a full IPv6 address on one line. */
+const WIDTH = 520;
 const SHOW_DELAY_MS = 250;
 /** Time to move the pointer from the badge onto the panel without it closing. */
 const HIDE_DELAY_MS = 200;
@@ -63,10 +64,12 @@ export function OpensPopover({ tracked, children }: { tracked: TrackingSummary; 
                 top: at.top,
                 bottom: at.bottom,
                 width: WIDTH,
+                maxWidth: "calc(100vw - 16px)",
                 maxHeight: "60vh",
                 overflowY: "auto",
-                padding: 12,
+                padding: "12px 14px",
                 borderRadius: 10,
+                boxSizing: "border-box",
                 border: `1px solid ${colors.border}`,
                 background: colors.surface,
                 color: colors.foreground,
