@@ -5,6 +5,7 @@ import { router, usePathname } from "expo-router";
 import {
   Archive,
   CalendarDays,
+  Contact as ContactIcon,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -99,7 +100,7 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
     if (onDone) onDone();
     else if (!onMail) router.navigate("/");
   };
-  const go = (path: "/scheduled" | "/settings" | "/calendar") => {
+  const go = (path: "/scheduled" | "/settings" | "/calendar" | "/contacts") => {
     if (onDone) router.push(path);
     else router.navigate(path);
   };
@@ -165,6 +166,7 @@ export function MailboxNav({ onDone, showCompose = true }: { onDone?: () => void
         })}
 
         <View className="my-4 h-px bg-border" />
+        <NavItem icon={ContactIcon} label="Contacts" active={pathname === "/contacts"} onPress={() => go("/contacts")} />
         <NavItem icon={CalendarDays} label="Calendar" active={pathname === "/calendar" || pathname === "/event"} onPress={() => go("/calendar")} />
         <NavItem icon={Clock} label="Scheduled" count={scheduledCount} active={pathname === "/scheduled"} onPress={() => go("/scheduled")} />
       </ScrollView>

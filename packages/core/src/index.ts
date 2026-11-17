@@ -9,6 +9,8 @@ export { subjectKey } from "./subject.js";
 export { LabelStore, labelKeyword, labelsFromFlags } from "./labels.js";
 export { NewMailWatcher } from "./watcher.js";
 export { CalendarService } from "./calendar.js";
+export { ContactService } from "./contacts.js";
+export { parseVCard } from "./contacts-icloud.js";
 export { LockService } from "./lock.js";
 export { EventReminders } from "./reminders.js";
 export { TRACKING_GIF, TrackingStore } from "./tracking.js";

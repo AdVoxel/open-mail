@@ -7,6 +7,7 @@ import {
   aesCipher,
   CalendarService,
   checkGoogleClient,
+  ContactService,
   EventReminders,
   ConfigStore,
   LabelStore,
@@ -46,6 +47,7 @@ const envGoogle = clientId && clientSecret ? { clientId, clientSecret } : undefi
 const google = () => envGoogle ?? store.googleClient();
 const mail = new MailService({ store, google });
 const calendars = new CalendarService(mail, store, google);
+const contacts = new ContactService(join(dataDir, "contacts.json"), mail, store, google);
 const reminders = new EventReminders(calendars);
 const scheduler = new Scheduler(join(dataDir, "scheduled.json"), mail);
 const watcher = new NewMailWatcher(mail);
@@ -60,6 +62,7 @@ const server = startServer({
   watcher,
   reminders,
   calendars,
+  contacts,
   tracking: new TrackingStore(join(dataDir, "tracking.json")),
   publicUrl: process.env.MAIL_APP_PUBLIC_URL || undefined,
   // The web app's address(es), comma-separated: its own image loads aren't counted as opens.
@@ -90,12 +93,14 @@ const server = startServer({
 scheduler.start();
 watcher.start();
 reminders.start();
+contacts.start();
 console.log(`Data: ${dataDir}`);
 
 async function shutdown() {
   scheduler.stop();
   watcher.stop();
   reminders.stop();
+  contacts.stop();
   server.close();
   await mail.close();
   process.exit(0);

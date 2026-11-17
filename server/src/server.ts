@@ -6,6 +6,7 @@ import {
   MailError,
   type AccountInfo,
   type CalendarService,
+  type ContactService,
   type EventReminder,
   type EventReminders,
   type LockService,
@@ -28,6 +29,7 @@ export interface ServerOptions {
   watcher: NewMailWatcher;
   reminders: EventReminders;
   calendars: CalendarService;
+  contacts: ContactService;
   lock: LockService;
   googleClient: GoogleClientSettings;
   tracking: TrackingStore;
@@ -90,6 +92,7 @@ const AccountInputSchema = z.object({
   imap: HostSchema,
   smtp: HostSchema,
   saveSentCopy: z.boolean().optional(),
+  importContacts: z.boolean().optional(),
 });
 
 const AccountUpdateSchema = z.object({
@@ -98,6 +101,7 @@ const AccountUpdateSchema = z.object({
   signature: z.string().max(100_000).optional(),
   name: z.string().trim().optional(),
   saveSentCopy: z.boolean().optional(),
+  importContacts: z.boolean().optional(),
 });
 
 const MailSchema = z.object({
@@ -165,6 +169,15 @@ const EventInputSchema = z.object({
   allDay: z.boolean(),
   location: z.string().max(2000).optional(),
   description: z.string().max(50_000).optional(),
+  guests: z.array(z.string().trim().min(3).max(320)).max(200).optional(),
+});
+
+const ContactUpdateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().max(500),
+  organization: z.string().max(500),
+  emails: z.array(z.string().max(320)).max(50),
+  phones: z.array(z.string().max(60)).max(50),
 });
 
 const EventTargetSchema = z.object({ accountId: z.string().min(1), calendarId: z.string().min(1) });
@@ -215,6 +228,7 @@ export function startServer({
   watcher,
   reminders,
   calendars,
+  contacts,
   lock,
   googleClient,
   tracking,
@@ -279,11 +293,24 @@ export function startServer({
         return { ok: true };
       },
     ],
-    ["POST", "/api/accounts", async (req) => mail.addAccount(parse(AccountInputSchema, await readJson(req)))],
+    [
+      "POST",
+      "/api/accounts",
+      async (req) => {
+        const account = await mail.addAccount(parse(AccountInputSchema, await readJson(req)));
+        void contacts.refresh(); // an iCloud account brings its contacts
+        return account;
+      },
+    ],
     [
       "PATCH",
       "/api/accounts/:id",
-      async (req, params) => mail.updateAccount(requireAccount(params), parse(AccountUpdateSchema, await readJson(req))),
+      async (req, params) => {
+        const update = parse(AccountUpdateSchema, await readJson(req));
+        const account = mail.updateAccount(requireAccount(params), update);
+        if (update.importContacts !== undefined) void contacts.refresh(); // import (or drop) its contacts now
+        return account;
+      },
     ],
     [
       "DELETE",
@@ -332,7 +359,8 @@ export function startServer({
       "GET",
       "/api/messages",
       // ?mailbox=sent: every account's Sent folder instead of the inboxes.
-      (_req, _params, url) => mail.listAll(url.searchParams.get("mailbox") === "sent" ? "sent" : "inbox", intParam(url, "limit", 50, 200)),
+      (_req, _params, url) =>
+        mail.listAll(url.searchParams.get("mailbox") === "sent" ? "sent" : "inbox", intParam(url, "limit", 50, 200), url.searchParams.get("unread") === "1"),
     ],
     [
       "GET",
@@ -343,6 +371,7 @@ export function startServer({
           limit: intParam(url, "limit", 50, 200) || 50,
           offset: intParam(url, "offset", 0, Number.MAX_SAFE_INTEGER),
           query: url.searchParams.get("q") ?? undefined,
+          unread: url.searchParams.get("unread") === "1",
         }),
     ],
     [
@@ -494,7 +523,10 @@ export function startServer({
         const url = await new Promise<string>((resolve, reject) => {
           calendars
             .connectGoogle(accountId, (authUrl) => resolve(authUrl))
-            .then((account) => Object.assign(session, { status: "done", account }))
+            .then((account) => {
+              Object.assign(session, { status: "done", account });
+              void contacts.refresh(); // the same sign-in gives contacts
+            })
             .catch((err: unknown) => {
               Object.assign(session, { status: "error", error: describe(err) });
               reject(err);
@@ -504,7 +536,34 @@ export function startServer({
         return { sessionId: id, url };
       },
     ],
-    ["DELETE", "/api/accounts/:id/calendar/google", (_req, params) => calendars.disconnectGoogle(requireAccount(params))],
+    [
+      "DELETE",
+      "/api/accounts/:id/calendar/google",
+      (_req, params) => {
+        const account = calendars.disconnectGoogle(requireAccount(params));
+        void contacts.refresh();
+        return account;
+      },
+    ],
+
+    // Contacts (imported from the accounts on their own; refresh to import now)
+    ["GET", "/api/contacts", () => contacts.list()],
+    [
+      "PATCH",
+      "/api/contacts",
+      async (req) => {
+        const { id, ...update } = parse(ContactUpdateSchema, await readJson(req));
+        return contacts.update(id, update);
+      },
+    ],
+    [
+      "POST",
+      "/api/contacts/refresh",
+      async () => {
+        await contacts.refresh();
+        return contacts.list();
+      },
+    ],
     [
       "POST",
       "/api/calendar/events/respond",

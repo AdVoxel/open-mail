@@ -4,7 +4,7 @@ import ICAL from "ical.js";
 import { createDAVClient, type DAVCalendar, type DAVCalendarObject } from "tsdav";
 import { MailError } from "./mail.js";
 import { paletteColor } from "./presets.js";
-import type { AccountId, CalendarEvent, CalendarInfo, EventInput, InvitationResponse, InvitationStatus } from "./types.js";
+import type { AccountId, CalendarEvent, CalendarInfo, EventGuest, EventInput, InvitationResponse, InvitationStatus } from "./types.js";
 
 const SERVER_URL = "https://caldav.icloud.com";
 /** Discovery takes ~2 s, so the client and the calendar list are reused for a while. */
@@ -13,11 +13,16 @@ const SESSION_MS = 10 * 60_000;
 const MAX_OCCURRENCES = 20_000;
 
 type Client = Awaited<ReturnType<typeof createDAVClient>>;
-/** The account's login, and the addresses it receives invitations at. */
-type Login = (id: AccountId) => { user: string; pass: string; addresses: string[] };
+/** The account's login, the addresses it receives invitations at (the first organizes yours), and your name. */
+type Login = (id: AccountId) => { user: string; pass: string; addresses: string[]; name: string };
+/** Who organizes the events you invite people to. */
+interface Organizer {
+  address: string;
+  name: string;
+}
 
 export class ICloudCalendars {
-  private sessions = new Map<AccountId, { client: Client; calendars: DAVCalendar[]; self: string[]; at: number }>();
+  private sessions = new Map<AccountId, { client: Client; calendars: DAVCalendar[]; self: string[]; organizer: Organizer; at: number }>();
 
   constructor(private login: Login) {}
 
@@ -28,7 +33,7 @@ export class ICloudCalendars {
   private async session(id: AccountId) {
     const cached = this.sessions.get(id);
     if (cached && Date.now() - cached.at < SESSION_MS) return cached;
-    const { user, pass, addresses } = this.login(id);
+    const { user, pass, addresses, name } = this.login(id);
     let client: Client;
     try {
       client = await createDAVClient({
@@ -43,7 +48,7 @@ export class ICloudCalendars {
     const calendars = (await client.fetchCalendars()).filter((c) => (c.components ?? []).includes("VEVENT"));
     // How you appear in ATTENDEE/ORGANIZER: your addresses (iCloud's own id for you, urn:uuid, is matched by isSelf).
     const self = [...new Set(addresses.map((a) => `mailto:${a}`.toLowerCase()))];
-    const session = { client, calendars, self, at: Date.now() };
+    const session = { client, calendars, self, organizer: { address: addresses[0]!, name }, at: Date.now() };
     this.sessions.set(id, session);
     return session;
   }
@@ -52,7 +57,7 @@ export class ICloudCalendars {
     const session = await this.session(id);
     const calendar = session.calendars.find((c) => c.url === calendarId);
     if (!calendar) throw new MailError(404, "Calendar not found");
-    return { client: session.client, calendar, self: session.self };
+    return { client: session.client, calendar, self: session.self, organizer: session.organizer };
   }
 
   async listCalendars(id: AccountId): Promise<Omit<CalendarInfo, "visible">[]> {
@@ -83,7 +88,7 @@ export class ICloudCalendars {
   }
 
   async createEvent(id: AccountId, calendarId: string, input: EventInput): Promise<CalendarEvent> {
-    const { client, calendar } = await this.calendar(id, calendarId);
+    const { client, calendar, self, organizer } = await this.calendar(id, calendarId);
     const uid = randomUUID();
     const root = new ICAL.Component(["vcalendar", [], []]);
     root.updatePropertyWithValue("prodid", "-//Open Mail//Calendar//EN");
@@ -91,20 +96,21 @@ export class ICloudCalendars {
     const vevent = new ICAL.Component("vevent");
     vevent.updatePropertyWithValue("uid", uid);
     vevent.updatePropertyWithValue("dtstamp", ICAL.Time.now());
-    applyInput(vevent, input);
+    applyInput(vevent, input, organizer, self);
     root.addSubcomponent(vevent);
 
     const filename = `${uid}.ics`;
     const res = await client.createCalendarObject({ calendar, filename, iCalString: root.toString() });
     if (!res.ok) throw new MailError(502, `iCloud refused the event (HTTP ${res.status})`);
     const object = { url: new URL(filename, calendar.url).href, data: root.toString() };
-    return eventsOf(object, id, calendarId, new Date(0), new Date(8.64e15), [])[0]!;
+    return eventsOf(object, id, calendarId, new Date(0), new Date(8.64e15), self)[0]!;
   }
 
   async updateEvent(id: AccountId, calendarId: string, eventId: string, input: EventInput): Promise<CalendarEvent> {
-    const { client, object, root, vevent } = await this.editable(id, calendarId, eventId);
+    const { client, object, root, vevent, self, organizer } = await this.editable(id, calendarId, eventId);
     // Change the event in place so what the app doesn't show (alarms, extra properties) is kept.
-    applyInput(vevent, input);
+    // With guests, iCloud emails them the invitation or the change.
+    applyInput(vevent, input, organizer, self);
     const sequence = Number(vevent.getFirstPropertyValue("sequence") ?? 0);
     vevent.updatePropertyWithValue("sequence", sequence + 1);
     vevent.updatePropertyWithValue("dtstamp", ICAL.Time.now());
@@ -113,7 +119,7 @@ export class ICloudCalendars {
     const res = await client.updateCalendarObject({ calendarObject: { url: object.url, data, etag: object.etag } });
     if (res.status === 412) throw new MailError(409, "The event changed on another device. Refresh and try again.");
     if (!res.ok) throw new MailError(502, `iCloud refused the change (HTTP ${res.status})`);
-    return eventsOf({ url: object.url, data }, id, calendarId, new Date(0), new Date(8.64e15), [])[0]!;
+    return eventsOf({ url: object.url, data }, id, calendarId, new Date(0), new Date(8.64e15), self)[0]!;
   }
 
   async deleteEvent(id: AccountId, calendarId: string, eventId: string): Promise<void> {
@@ -150,9 +156,9 @@ export class ICloudCalendars {
     if (!res.ok) throw new MailError(502, `iCloud refused the answer (HTTP ${res.status})`);
   }
 
-  /** The event's object, if the app may change it (single event without guests). */
+  /** The event's object, if the app may change it (single event, without guests or organized by you). */
   private async editable(id: AccountId, calendarId: string, eventId: string) {
-    const { client, calendar } = await this.calendar(id, calendarId);
+    const { client, calendar, self, organizer } = await this.calendar(id, calendarId);
     if (eventId.includes("#") || !eventId.startsWith(calendar.url)) throw new MailError(409, "Repeating events can't be changed from the app yet");
     const [object] = await client.fetchCalendarObjects({ calendar, objectUrls: [eventId] });
     if (!object?.data) throw new MailError(404, "Event not found");
@@ -161,8 +167,8 @@ export class ICloudCalendars {
     const vevent = vevents.find((v) => !v.hasProperty("recurrence-id")) ?? vevents[0];
     if (!vevent) throw new MailError(404, "Event not found");
     if (vevent.hasProperty("rrule") || vevents.length > 1) throw new MailError(409, "Repeating events can't be changed from the app yet");
-    if (vevent.hasProperty("attendee")) throw new MailError(409, "Events with guests can't be changed from the app yet");
-    return { client, object, root, vevent };
+    if (vevent.hasProperty("attendee") && !organizedBySelf(vevent, self)) throw new MailError(409, "Only the organizer can change an event with guests");
+    return { client, object, root, vevent, self, organizer };
   }
 }
 
@@ -170,6 +176,33 @@ export class ICloudCalendars {
 function isSelf(value: unknown, self: string[]): boolean {
   const v = String(value ?? "").toLowerCase();
   return self.includes(v) || v.startsWith("urn:uuid:");
+}
+
+/** No organizer (a plain event), or you organize it. */
+function organizedBySelf(vevent: ICAL.Component, self: string[]): boolean {
+  const organizer = vevent.getFirstProperty("organizer");
+  return !organizer || isSelf(organizer.getFirstValue(), self);
+}
+
+const PARTSTAT: Record<string, InvitationStatus> = { accepted: "accepted", tentative: "tentative", declined: "declined" };
+
+/** The guests other than you (rooms and groups left out). */
+function guestsOf(vevent: ICAL.Component, self: string[]): EventGuest[] {
+  return vevent
+    .getAllProperties("attendee")
+    .filter((a) => {
+      const value = String(a.getFirstValue() ?? "");
+      const type = String(a.getParameter("cutype") ?? "INDIVIDUAL").toUpperCase();
+      return /^mailto:/i.test(value) && !isSelf(value, self) && (type === "INDIVIDUAL" || type === "UNKNOWN");
+    })
+    .map((a) => {
+      const cn = a.getParameter("cn");
+      return {
+        email: String(a.getFirstValue()).replace(/^mailto:/i, ""),
+        name: typeof cn === "string" ? cn : "",
+        status: PARTSTAT[String(a.getParameter("partstat") ?? "").toLowerCase()] ?? "needs-action",
+      };
+    });
 }
 
 /** Real alerts (DISPLAY/AUDIO; Apple's ACTION:NONE placeholders aren't), in minutes before the start. */
@@ -206,7 +239,7 @@ function invitationOf(vevent: ICAL.Component, self: string[]): CalendarEvent["in
 }
 
 /** The events (or occurrences, for repeats) of one calendar object that fall in [from, to). */
-function eventsOf(object: DAVCalendarObject, accountId: AccountId, calendarId: string, from: Date, to: Date, self: string[]): CalendarEvent[] {
+export function eventsOf(object: DAVCalendarObject, accountId: AccountId, calendarId: string, from: Date, to: Date, self: string[]): CalendarEvent[] {
   const root = new ICAL.Component(ICAL.parse(object.data));
   // Times with a TZID need their zone known before they're read.
   for (const zone of root.getAllSubcomponents("vtimezone")) ICAL.TimezoneService.register(zone);
@@ -215,7 +248,7 @@ function eventsOf(object: DAVCalendarObject, accountId: AccountId, calendarId: s
   if (!master) return [];
   const event = new ICAL.Event(master); // picks up the moved/changed occurrences in the same object
   const hasAttendees = master.hasProperty("attendee");
-  const base = { accountId, calendarId, hasAttendees, self };
+  const base = { accountId, calendarId, hasAttendees, self, organizing: organizedBySelf(master, self), guests: guestsOf(master, self) };
 
   if (!event.isRecurring()) {
     return [toEvent(base, object.url, event, event.startDate, event.endDate, false)];
@@ -234,7 +267,7 @@ function eventsOf(object: DAVCalendarObject, accountId: AccountId, calendarId: s
 }
 
 function toEvent(
-  { self, ...base }: { accountId: AccountId; calendarId: string; hasAttendees: boolean; self: string[] },
+  { self, organizing, ...base }: { accountId: AccountId; calendarId: string; hasAttendees: boolean; guests: EventGuest[]; self: string[]; organizing: boolean },
   id: string,
   item: ICAL.Event,
   start: ICAL.Time,
@@ -257,7 +290,7 @@ function toEvent(
     location: item.location ?? "",
     description: item.description ?? "",
     recurring,
-    editable: !recurring && !base.hasAttendees,
+    editable: !recurring && (!base.hasAttendees || organizing),
     alerts: alertsOf(item.component, start, endTime),
     invitation: invitationOf(item.component, self),
   };
@@ -281,11 +314,54 @@ function setTime(vevent: ICAL.Component, name: "dtstart" | "dtend", value: strin
   vevent.addProperty(property);
 }
 
-function applyInput(vevent: ICAL.Component, input: EventInput): void {
+/**
+ * Sets the guest list: guests already invited keep their answers, new ones get
+ * an invitation (RSVP). You're the organizer, and an attendee who accepted, as
+ * Apple's apps do. No guests: a plain event again.
+ */
+function setGuests(vevent: ICAL.Component, guests: string[], organizer: Organizer, self: string[]): void {
+  const wanted = new Map(guests.map((g): [string, string] => [g.trim().toLowerCase(), g.trim()]).filter(([key]) => key.includes("@")));
+  for (const attendee of vevent.getAllProperties("attendee")) {
+    const value = String(attendee.getFirstValue() ?? "");
+    const email = value.replace(/^mailto:/i, "").toLowerCase();
+    if (isSelf(value, self)) {
+      if (!wanted.size) vevent.removeProperty(attendee);
+    } else if (wanted.has(email)) wanted.delete(email);
+    else vevent.removeProperty(attendee);
+  }
+  if (!vevent.getAllProperties("attendee").length && !wanted.size) {
+    vevent.removeAllProperties("organizer");
+    return;
+  }
+  if (!vevent.hasProperty("organizer")) {
+    const property = new ICAL.Property("organizer", vevent);
+    property.setValue(`mailto:${organizer.address}`);
+    if (organizer.name) property.setParameter("cn", organizer.name);
+    vevent.addProperty(property);
+    const me = new ICAL.Property("attendee", vevent);
+    me.setValue(`mailto:${organizer.address}`);
+    if (organizer.name) me.setParameter("cn", organizer.name);
+    me.setParameter("partstat", "ACCEPTED");
+    me.setParameter("role", "CHAIR");
+    vevent.addProperty(me);
+  }
+  for (const email of wanted.values()) {
+    const attendee = new ICAL.Property("attendee", vevent);
+    attendee.setValue(`mailto:${email}`);
+    attendee.setParameter("cutype", "INDIVIDUAL");
+    attendee.setParameter("role", "REQ-PARTICIPANT");
+    attendee.setParameter("partstat", "NEEDS-ACTION");
+    attendee.setParameter("rsvp", "TRUE");
+    vevent.addProperty(attendee);
+  }
+}
+
+export function applyInput(vevent: ICAL.Component, input: EventInput, organizer: Organizer, self: string[]): void {
   setText(vevent, "summary", input.title.trim() || "(no title)");
   setText(vevent, "location", input.location);
   setText(vevent, "description", input.description);
   setTime(vevent, "dtstart", input.start, input.allDay);
   setTime(vevent, "dtend", input.end, input.allDay);
   vevent.removeAllProperties("duration");
+  if (input.guests) setGuests(vevent, input.guests, organizer, self);
 }

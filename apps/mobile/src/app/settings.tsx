@@ -116,13 +116,14 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
   const [signature, setSignature] = useState(account.signature);
   const [name, setName] = useState(account.name);
   const [saveSentCopy, setSaveSentCopy] = useState(account.saveSentCopy);
+  const [importContacts, setImportContacts] = useState(account.importContacts ?? true);
   const [busy, setBusy] = useState(false);
   const editable = account.source === "app";
 
   async function save() {
     setBusy(true);
     try {
-      await api.updateAccount(account.id, { label: label.trim() || account.address, color, signature: signature.trim(), name: name.trim(), saveSentCopy });
+      await api.updateAccount(account.id, { label: label.trim() || account.address, color, signature: signature.trim(), name: name.trim(), saveSentCopy, importContacts });
       await reloadAccounts();
       notify("Account updated");
       setOpen(false);
@@ -181,6 +182,14 @@ function AccountRow({ account, last }: { account: AccountInfo; last: boolean }) 
             value={saveSentCopy}
             onChange={setSaveSentCopy}
           />
+          {account.calendar.provider ? (
+            <ToggleRow
+              label="Import contacts automatically"
+              hint={contactsHint(account.calendar.provider, account.calendar.connected)}
+              value={importContacts}
+              onChange={setImportContacts}
+            />
+          ) : null}
           <View className="flex-row gap-2">
             <Button size="sm" className="rounded-lg" disabled={busy} onPress={() => void save()}>
               <ButtonText>Save</ButtonText>
@@ -223,6 +232,14 @@ function HostFields({ title, value, onChange }: { title: string; value: HostConf
 
 const CUSTOM = "custom";
 
+/** What "Import contacts automatically" needs for this kind of account. */
+function contactsHint(provider: "icloud" | "google", connected: boolean): string {
+  if (provider === "icloud") return "Your iCloud contacts, with the same app password. Refreshed every hour.";
+  return connected
+    ? "Your Google contacts and the people Gmail remembers. Refreshed every hour."
+    : "Gmail: also click \"Connect Google\" in this account's Calendar settings, signing in with the login address (not an alias), so the server can read your contacts.";
+}
+
 function AddAccount() {
   const api = useApi();
   const notify = useNotify();
@@ -238,6 +255,7 @@ function AddAccount() {
   const [smtp, setSmtp] = useState<HostConfig>({ host: "", port: 465, secure: true });
   const [busy, setBusy] = useState<"test" | "add" | "google" | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [importContacts, setImportContacts] = useState(true);
 
   const preset = MAIL_PRESETS.find((p) => p.id === presetId);
   const input = (): AccountInput => ({
@@ -249,6 +267,7 @@ function AddAccount() {
     smtp: preset ? preset.smtp : smtp,
     // "Gmail", "iCloud"... unless that label is taken; then the server uses the address.
     label: preset && !accounts.some((a) => a.label === preset.label) ? preset.label : undefined,
+    importContacts: preset?.calendar ? importContacts : undefined,
   });
   const ready = address.includes("@") && password.length > 0 && (preset || (imap.host && smtp.host && imap.port && smtp.port));
 
@@ -337,6 +356,14 @@ function AddAccount() {
       </Pressable>
       {advanced ? (
         <LabeledInput label="Login username (if not the email address)" value={user} onChange={setUser} placeholder={address || "username"} />
+      ) : null}
+      {preset?.calendar ? (
+        <ToggleRow
+          label="Import contacts automatically"
+          hint={contactsHint(preset.calendar, false)}
+          value={importContacts}
+          onChange={setImportContacts}
+        />
       ) : null}
       <View className="flex-row flex-wrap items-center gap-2">
         <Button className="rounded-lg" disabled={!ready || busy !== null} onPress={() => void run("add")}>

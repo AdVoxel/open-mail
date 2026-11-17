@@ -15,8 +15,10 @@ const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 // Full IMAP/SMTP access requires this scope; "openid email" gives us the address.
 export const GOOGLE_MAIL_SCOPES = "https://mail.google.com/ openid email";
-/** Read and write calendars (Google Calendar API). */
-export const GOOGLE_CALENDAR_SCOPES = "https://www.googleapis.com/auth/calendar openid email";
+/** Contacts (People API): read and edit saved contacts, read Gmail's "Other contacts". */
+export const GOOGLE_CONTACTS_SCOPES = "https://www.googleapis.com/auth/contacts https://www.googleapis.com/auth/contacts.other.readonly";
+/** Read and write calendars (Google Calendar API), and read contacts: one sign-in connects both. */
+export const GOOGLE_CALENDAR_SCOPES = `https://www.googleapis.com/auth/calendar ${GOOGLE_CONTACTS_SCOPES} openid email`;
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000;
 
 interface TokenResponse {
@@ -37,6 +39,8 @@ export async function signInWithGoogle(
   client: GoogleClient,
   openUrl: (url: string) => Promise<void> | void,
   scopes = GOOGLE_MAIL_SCOPES,
+  /** The Google account to sign in as (pre-filled on Google's page). */
+  loginHint?: string,
 ): Promise<{ email: string; refreshToken: string }> {
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -75,6 +79,7 @@ export async function signInWithGoogle(
         state,
         access_type: "offline",
         prompt: "consent", // always return a refresh token
+        ...(loginHint ? { login_hint: loginHint } : {}),
       }).toString();
       void openUrl(authUrl.toString());
     });

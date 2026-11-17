@@ -1,8 +1,8 @@
 // Small building blocks on top of the gluestack-ui components, so screens share one look.
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ComponentRef, type ComponentType, type ReactNode } from "react";
-import { ActivityIndicator, Dimensions, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, Dimensions, Easing, Platform, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { LucideProps } from "lucide-react-native";
+import { RefreshCw, type LucideProps } from "lucide-react-native";
 import {
   AlertDialog,
   AlertDialogBackdrop,
@@ -31,6 +31,7 @@ export function IconButton({
   disabled,
   size = 18,
   tooltipAbove = false,
+  spinning = false,
 }: {
   icon: Icon;
   onPress: () => void;
@@ -41,6 +42,8 @@ export function IconButton({
   size?: number;
   /** Show the tooltip above the button (for buttons at the bottom of the screen). */
   tooltipAbove?: boolean;
+  /** Turn the icon round and round (something is loading). */
+  spinning?: boolean;
 }) {
   const colors = useColors();
   const tooltip = useTooltip();
@@ -60,7 +63,9 @@ export function IconButton({
           active ? "bg-accent" : ""
         }`}
       >
-        <IconComponent size={size} color={color ?? colors.foreground} strokeWidth={1.75} />
+        <Spin spinning={spinning}>
+          <IconComponent size={size} color={color ?? colors.foreground} strokeWidth={1.75} />
+        </Spin>
       </Pressable>
       {tooltip.side ? (
         <View
@@ -75,6 +80,49 @@ export function IconButton({
       ) : null}
     </View>
   );
+}
+
+/** One turn of a spinning icon. */
+const SPIN_MS = 800;
+
+/** Rotates its child while `spinning`; when it stops, the turn in progress finishes so the icon comes to rest upright. */
+function Spin({ spinning, children }: { spinning: boolean; children: ReactNode }) {
+  const turn = useRef(new Animated.Value(0)).current;
+  const running = useRef(false);
+  const want = useRef(spinning);
+  want.current = spinning;
+
+  useEffect(() => {
+    if (!spinning || running.current) return;
+    running.current = true;
+    const step = () => {
+      turn.setValue(0);
+      Animated.timing(turn, { toValue: 1, duration: SPIN_MS, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }).start(({ finished }) => {
+        if (finished && want.current) step();
+        else running.current = false;
+      });
+    };
+    step();
+  }, [spinning, turn]);
+
+  useEffect(() => () => turn.stopAnimation(), [turn]);
+  const rotate = turn.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+  return <Animated.View style={{ transform: [{ rotate }] }}>{children}</Animated.View>;
+}
+
+/** A Refresh button whose icon spins from the click until the refresh is done (or while `busy`), at least one turn. */
+export function RefreshButton({ onPress, busy = false, label = "Refresh" }: { onPress: () => unknown; busy?: boolean; label?: string }) {
+  const [clicked, setClicked] = useState(false);
+  const press = () => {
+    if (clicked) return;
+    setClicked(true);
+    const started = Date.now();
+    void Promise.resolve()
+      .then(onPress)
+      .catch(() => undefined) // the screen reports its own errors
+      .finally(() => setTimeout(() => setClicked(false), Math.max(0, SPIN_MS - (Date.now() - started))));
+  };
+  return <IconButton icon={RefreshCw} label={label} onPress={press} spinning={clicked || busy} />;
 }
 
 const TOOLTIP_DELAY_MS = 500;

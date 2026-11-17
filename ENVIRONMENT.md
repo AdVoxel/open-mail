@@ -42,12 +42,12 @@ sudo ./scripts/setup-env.sh /etc/open-mail/env
 
 Optional variables go in the same file as `NAME=value` lines.
 
-## Google Calendar (Gmail accounts)
+## Google Calendar and Contacts (Gmail accounts)
 
 Google doesn't let apps use your password or an app password for calendars; they need Google's own sign-in (OAuth). That takes a one-time OAuth client of your own:
 
 1. Open [console.cloud.google.com](https://console.cloud.google.com), create a project (or pick one).
-2. **APIs & Services → Library**: enable **Google Calendar API**.
+2. **APIs & Services → Library**: enable **Google Calendar API** and **People API** (contacts).
 3. **Google Auth Platform → Audience** (the OAuth consent screen):
    - For a Google Workspace address (e.g. `@weborama.com`), choose **Internal** if the project belongs to that organization. Then there's no test-user list and access doesn't expire.
    - Otherwise choose **External**, then add your address under **Test users**. While the app is in **Testing**, Google expires the sign-in after 7 days, so you'd reconnect weekly. To avoid that, **Publish app** (it then shows an "unverified app" warning, which is fine for your own use).
@@ -59,7 +59,9 @@ Google doesn't let apps use your password or an app password for calendars; they
    ```
 
    Then restart the server from a new terminal.
-6. In the app, open **Settings → (your Gmail account) → Calendar → Connect Google Calendar** and sign in with your Google account on Google's page. Do this with the browser on the same machine as the server: Google sends you back to `127.0.0.1` on that machine. The connection moves with `accounts.json` if you move the server later.
+6. In the app, open **Settings → (your Gmail account) → Calendar → Connect Google (calendar & contacts)** and sign in on Google's page with the account's **login** address, not a sender alias (the server refuses any other Google account). The same sign-in gives the calendar and the contacts; accounts connected before contacts existed need to disconnect and connect again once, so Google asks for the contacts permission. Do this with the browser on the same machine as the server: Google sends you back to `127.0.0.1` on that machine. The connection moves with `accounts.json` if you move the server later.
+
+Contacts are imported on their own every hour (iCloud accounts with their app password, Gmail accounts once Google is connected), for accounts with **Import contacts automatically** on (the default), and kept in `contacts.json` in the data directory.
 
 A Workspace admin can block third-party apps; if Google refuses the sign-in, ask them to allow this OAuth client.
 

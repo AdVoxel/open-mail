@@ -2,15 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { Trash2, X } from "lucide-react-native";
-import type { CalendarInfo, EventInput, InvitationResponse, InvitationStatus } from "@mail-app/api-client";
+import type { CalendarInfo, EventGuest, EventInput, InvitationResponse, InvitationStatus } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { DateField, TimeField } from "@/src/components/DateTimeFields";
+import { RecipientInput } from "@/src/components/RecipientInput";
 import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, Loading, useConfirm, useNotify } from "@/src/components/kit";
 import { addDays, hm, localDateTime, openedEvents, ymd } from "@/src/lib/calendarDates";
 import { useApi } from "@/src/lib/connection";
+import { recipientEmail, splitRecipients } from "@/src/lib/contacts";
 import { useMail } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
 
@@ -19,9 +21,10 @@ function close() {
   else router.replace("/calendar");
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/** `layer`: draws above the fields after it (for suggestion lists; web stacks every view on its own). */
+function Field({ label, children, layer }: { label: string; children: React.ReactNode; layer?: number }) {
   return (
-    <View className="gap-1.5">
+    <View className="gap-1.5" style={layer ? { zIndex: layer } : undefined}>
       <Text size="sm" className="font-medium">
         {label}
       </Text>
@@ -65,8 +68,78 @@ function readOnlyReason(event: { recurring: boolean; hasAttendees: boolean; invi
   if (event.invitation) return "You're a guest: the organizer changes the event. You can answer the invitation below.";
   if (calendarReadOnly) return "This calendar is read-only.";
   if (event.recurring) return "Repeating events can't be changed from the app yet. Edit them in Google Calendar or iCloud.";
-  if (event.hasAttendees) return "Events with guests can't be changed from the app yet, so guests aren't notified by mistake.";
+  if (event.hasAttendees) return "Only the organizer can change an event with guests.";
   return "This event can't be changed from the app.";
+}
+
+const GUEST_STATUS: Record<InvitationStatus, string> = {
+  "needs-action": "invited",
+  accepted: "going",
+  tentative: "maybe",
+  declined: "not going",
+};
+
+const EMAIL = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+
+/** Guests as chips, and a field that suggests contacts; typing a comma (or picking one) adds the address. */
+function GuestsField({
+  guests,
+  onChange,
+  known,
+  draft,
+  onDraft,
+  disabled,
+  inputClass,
+}: {
+  guests: string[];
+  onChange: (guests: string[]) => void;
+  known: EventGuest[];
+  draft: string;
+  onDraft: (draft: string) => void;
+  disabled: boolean;
+  inputClass: string;
+}) {
+  const colors = useColors();
+  const take = (value: string) => {
+    const parts = splitRecipients(value);
+    const done = parts.slice(0, -1).map(recipientEmail).filter((e) => EMAIL.test(e));
+    const fresh = done.filter((e) => !guests.some((g) => g.toLowerCase() === e.toLowerCase()));
+    if (fresh.length) onChange([...guests, ...fresh]);
+    onDraft(parts.length > 1 ? parts.at(-1)!.trimStart() : value);
+  };
+  return (
+    <View className="gap-2">
+      {guests.length ? (
+        <View className="flex-row flex-wrap gap-1.5">
+          {guests.map((email) => {
+            const info = known.find((k) => k.email.toLowerCase() === email.toLowerCase());
+            return (
+              <View key={email} className="flex-row items-center gap-1 rounded-full border border-border py-1 pl-3 pr-1">
+                <Text size="sm">{info?.name || email}</Text>
+                {info ? (
+                  <Text size="xs" className="text-muted-foreground">
+                    · {GUEST_STATUS[info.status]}
+                  </Text>
+                ) : null}
+                {!disabled ? (
+                  <Pressable
+                    onPress={() => onChange(guests.filter((g) => g !== email))}
+                    accessibilityLabel={`Remove ${email}`}
+                    className="h-6 w-6 items-center justify-center rounded-full data-[hover=true]:bg-accent"
+                  >
+                    <X size={12} color={colors.muted} />
+                  </Pressable>
+                ) : (
+                  <View className="w-2" />
+                )}
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+      {!disabled ? <RecipientInput value={draft} onChangeText={take} placeholder="Start typing a name or email" className={inputClass} /> : null}
+    </View>
+  );
 }
 
 /** New event (`date` param) or an existing one (`key` param, from the calendar screen). */
@@ -111,6 +184,8 @@ export default function EventScreen() {
   const [endTime, setEndTime] = useState(initial.endTime);
   const [location, setLocation] = useState(existing?.location ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
+  const [guests, setGuests] = useState<string[]>(existing?.guests?.map((g) => g.email) ?? []);
+  const [guestDraft, setGuestDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<InvitationStatus | undefined>(existing?.invitation?.status);
 
@@ -158,16 +233,27 @@ export default function EventScreen() {
     setStartDay(day);
   };
 
+  /** The guest list to save: the chips, plus an address still being typed. Older servers (no guests on events) get none. */
+  const guestList = (): string[] | string | undefined => {
+    if (existing && !existing.guests) return undefined;
+    const typed = recipientEmail(guestDraft);
+    if (!typed) return guests;
+    if (!EMAIL.test(typed)) return `"${typed}" isn't an email address`;
+    return guests.some((g) => g.toLowerCase() === typed.toLowerCase()) ? guests : [...guests, typed];
+  };
+
   const input = (): EventInput | string => {
+    const list = guestList();
+    if (typeof list === "string") return list;
     if (allDay) {
       if (endDay < startDay) return "The end date is before the start date";
-      return { title, allDay, start: startDay, end: addDays(endDay, 1), location, description };
+      return { title, allDay, start: startDay, end: addDays(endDay, 1), location, description, guests: list };
     }
     if (!/^\d{1,2}:\d{2}$/.test(startTime) || !/^\d{1,2}:\d{2}$/.test(endTime)) return "Times look like 09:30";
     const start = localDateTime(startDay, startTime);
     const end = localDateTime(endDay, endTime);
     if (end < start) return "The event ends before it starts";
-    return { title, allDay, start, end, location, description };
+    return { title, allDay, start, end, location, description, guests: list };
   };
 
   const save = async () => {
@@ -178,7 +264,12 @@ export default function EventScreen() {
     try {
       if (existing) await api.updateEvent({ ...target, eventId: existing.id }, values);
       else await api.createEvent(target, values);
-      notify(existing ? "Event updated" : "Event added");
+      const before = new Set((existing?.guests ?? []).map((g) => g.email.toLowerCase()));
+      const invited = (values.guests ?? []).filter((g) => !before.has(g.toLowerCase())).length;
+      notify(
+        existing ? "Event updated" : "Event added",
+        invited ? `Invitation sent to ${invited} ${invited === 1 ? "guest" : "guests"}.` : values.guests?.length ? "Guests are told about the change." : undefined,
+      );
       close();
     } catch (e) {
       notify("Couldn't save the event", (e as Error).message, "error");
@@ -351,6 +442,20 @@ export default function EventScreen() {
             <Text size="sm" className="text-muted-foreground">
               {existing.alerts.map((m) => alertText(m, existing.allDay)).join(" · ")}
             </Text>
+          </Field>
+        ) : null}
+
+        {editable || guests.length ? (
+          <Field label="Guests" layer={10}>
+            <GuestsField
+              guests={guests}
+              onChange={setGuests}
+              known={existing?.guests ?? []}
+              draft={guestDraft}
+              onDraft={setGuestDraft}
+              disabled={disabled}
+              inputClass={inputClass}
+            />
           </Field>
         ) : null}
 

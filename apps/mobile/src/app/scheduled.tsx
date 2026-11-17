@@ -1,11 +1,11 @@
 import { useCallback, useState } from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
-import { ArrowLeft, CalendarClock, Pencil, RefreshCw, Send, Trash2 } from "lucide-react-native";
+import { ArrowLeft, CalendarClock, Pencil, Send, Trash2 } from "lucide-react-native";
 import type { ScheduledMail } from "@mail-app/api-client";
 import { Badge, BadgeText } from "@/components/ui/badge";
 import { Text } from "@/components/ui/text";
-import { Card, EmptyState, ErrorBanner, Header, IconButton, Loading, SectionTitle, useConfirm, useNotify } from "@/src/components/kit";
+import { Card, EmptyState, ErrorBanner, Header, IconButton, Loading, SectionTitle, useConfirm, useNotify, RefreshButton } from "@/src/components/kit";
 import { useApi } from "@/src/lib/connection";
 import { formatWhen, useIsWide } from "@/src/lib/format";
 import { useMail } from "@/src/lib/mail";
@@ -144,7 +144,7 @@ export default function ScheduledScreen() {
         title="Scheduled"
         subtitle={items ? `${queued.length} waiting` : undefined}
         left={!isWide ? <IconButton icon={ArrowLeft} label="Back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))} /> : undefined}
-        right={<IconButton icon={RefreshCw} label="Refresh" onPress={() => void load()} />}
+        right={<RefreshButton onPress={load} />}
       />
       {error ? <ErrorBanner message={error} onRetry={() => void load()} /> : null}
       {items === null ? (

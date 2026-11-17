@@ -31,7 +31,7 @@ export class CalendarService {
   ) {
     this.icloud = new ICloudCalendars((id) => {
       const account = this.account(id);
-      return { ...mail.passwordLogin(id), addresses: [account.address, account.login] };
+      return { ...mail.passwordLogin(id), addresses: [account.address, account.login], name: account.name };
     });
     this.google = new GoogleCalendars(googleClient, (id) => {
       const stored = store?.accounts().find((a) => a.id === id);
@@ -130,18 +130,19 @@ export class CalendarService {
     return this.account(accountId);
   }
 
-  /** Google sign-in for calendar access on a Gmail account (its mail keeps using the app password). */
+  /** Google sign-in for calendar and contacts access on a Gmail account (its mail keeps using the app password). */
   async connectGoogle(accountId: AccountId, openUrl: (url: string) => Promise<void> | void): Promise<AccountInfo> {
     const account = this.account(accountId);
     if (account.calendar.provider !== "google") throw new MailError(409, "Only Gmail accounts connect to Google Calendar");
     const client = this.googleClient();
     if (!client) throw new MailError(501, "Google sign-in isn't set up: add the OAuth client in Settings");
     const store = this.requireStore();
-    const { email, refreshToken } = await signInWithGoogle(client, openUrl, GOOGLE_CALENDAR_SCOPES);
-    // The Google account can be the mailbox's login while the address is an alias of it.
-    const allowed = [...new Set([account.login, account.address].map((a) => a.toLowerCase()))];
-    if (!allowed.includes(email.toLowerCase())) {
-      throw new MailError(400, `Signed in as ${email}; sign in as ${allowed.join(" or ")} to connect this account's calendar`);
+    // Sign in as the mailbox's login, never the sender address: that can be an alias, or even a
+    // different Google account, whose calendar and contacts aren't this mailbox's.
+    const login = (account.login || account.address).trim();
+    const { email, refreshToken } = await signInWithGoogle(client, openUrl, GOOGLE_CALENDAR_SCOPES, login);
+    if (email.toLowerCase() !== login.toLowerCase()) {
+      throw new MailError(400, `Signed in as ${email}; sign in as ${login} (this account's login, not its sender address) to connect its calendar and contacts`);
     }
     store.setCalendarToken(accountId, refreshToken);
     store.updateCalendar(accountId, { enabled: true });
@@ -162,6 +163,8 @@ function sortKey(e: CalendarEvent): string {
 }
 
 function checkInput(input: EventInput): void {
+  const bad = (input.guests ?? []).find((g) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(g.trim()));
+  if (bad !== undefined) throw new MailError(400, `"${bad}" isn't an email address`);
   const date = /^\d{4}-\d{2}-\d{2}$/;
   if (input.allDay) {
     if (!date.test(input.start) || !date.test(input.end)) throw new MailError(400, "All-day events take dates (YYYY-MM-DD)");

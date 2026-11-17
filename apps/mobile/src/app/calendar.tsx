@@ -1,13 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
-import { ArrowLeft, Bell, CalendarDays, ChevronLeft, ChevronRight, MapPin, Plus, RefreshCw, Repeat, UserCog } from "lucide-react-native";
+import { ArrowLeft, Bell, CalendarDays, ChevronLeft, ChevronRight, MapPin, Plus, Repeat, UserCog } from "lucide-react-native";
 import type { CalendarEvent, CalendarInfo } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
 import { AccountCalendarSettings } from "@/src/components/CalendarSetup";
-import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, Loading } from "@/src/components/kit";
+import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, Loading, RefreshButton } from "@/src/components/kit";
 import { addDays, dayStart, eventDays, eventKey, formatEventTime, monthGrid, openedEvents, ymd } from "@/src/lib/calendarDates";
 import { useApi } from "@/src/lib/connection";
 import { useIsWide } from "@/src/lib/format";
@@ -137,7 +137,7 @@ export default function CalendarScreen() {
             <ButtonText>Today</ButtonText>
           </Button>
           <IconButton icon={ChevronRight} label="Next month" onPress={() => shiftMonth(1)} />
-          <IconButton icon={RefreshCw} label="Refresh" onPress={() => void load()} disabled={loading} />
+          <RefreshButton onPress={load} busy={loading} />
           {calendarAccounts.length ? (
             <IconButton icon={UserCog} label="Calendar accounts" active={setupOpen} onPress={() => setSetupOpen((o) => !o)} />
           ) : null}

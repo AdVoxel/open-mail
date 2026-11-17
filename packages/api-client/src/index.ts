@@ -9,6 +9,9 @@ import type {
   Address,
   CalendarEvent,
   CalendarPage,
+  Contact,
+  ContactsPage,
+  ContactUpdate,
   EventInput,
   EventReminder,
   EventsPage,
@@ -58,6 +61,8 @@ export interface ListParams {
   limit?: number;
   offset?: number;
   q?: string;
+  /** Only unread messages. */
+  unread?: boolean;
 }
 
 export type MoveTarget = "inbox" | "archive" | "trash" | "junk" | (string & {});
@@ -132,15 +137,16 @@ export function createMailApi(baseUrl: string, token: string) {
 
     // Folders and messages
     folders: (id: AccountId, fresh = false) => request<Folder[]>(`${acc(id)}/folders${fresh ? "?fresh" : ""}`),
-    messages: (id: AccountId, { folder = "INBOX", limit = 50, offset = 0, q }: ListParams = {}) => {
+    messages: (id: AccountId, { folder = "INBOX", limit = 50, offset = 0, q, unread }: ListParams = {}) => {
       const query = new URLSearchParams({ folder, limit: String(limit), offset: String(offset) });
       if (q) query.set("q", q);
+      if (unread) query.set("unread", "1");
       return request<MessagePage>(`${acc(id)}/messages?${query}`);
     },
     /** Newest inbox messages across all accounts. */
-    allInboxes: (limit = 50) => request<MessagePage>(`/messages?limit=${limit}`),
+    allInboxes: (limit = 50, unread = false) => request<MessagePage>(`/messages?limit=${limit}${unread ? "&unread=1" : ""}`),
     /** Newest sent messages across all accounts. */
-    allSent: (limit = 50) => request<MessagePage>(`/messages?mailbox=sent&limit=${limit}`),
+    allSent: (limit = 50, unread = false) => request<MessagePage>(`/messages?mailbox=sent&limit=${limit}${unread ? "&unread=1" : ""}`),
     message: (id: AccountId, folder: string, uid: number) => request<MailMessage>(msg(id, folder, uid)),
     /** The message's whole conversation, newest first (including your replies from Sent). */
     thread: (id: AccountId, folder: string, uid: number) => request<MessageHeader[]>(msg(id, folder, uid, "/thread")),
@@ -236,6 +242,13 @@ export function createMailApi(baseUrl: string, token: string) {
       request<{ ok: true }>("/calendar/events/respond", { method: "POST", body: { ...target, response } }),
     deleteEvent: (target: EventTarget & { eventId: string }) =>
       request<{ ok: true }>(`/calendar/events?${new URLSearchParams({ ...target })}`, { method: "DELETE" }),
+
+    // Contacts: imported by the server from iCloud and Google (older servers have none: 404)
+    contacts: () => request<ContactsPage>("/contacts"),
+    /** Changes a contact in Google or iCloud. */
+    updateContact: (id: string, update: ContactUpdate) => request<Contact>("/contacts", { method: "PATCH", body: { id, ...update } }),
+    /** Imports every account's contacts now; resolves when done. */
+    refreshContacts: () => request<ContactsPage>("/contacts/refresh", { method: "POST", body: {}, timeoutMs: 120_000 }),
 
     /** Opens of tracked mail (all of it, or the given Message-IDs). */
     tracking: (messageIds?: string[]) =>

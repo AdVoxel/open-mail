@@ -117,15 +117,21 @@ export function SwipeRow({
 
   return (
     <View onLayout={(e) => (width.current = e.nativeEvent.layout.width)} className="overflow-hidden">
-      {/* Behind the row: Read on the left (shown by a right swipe), Delete on the right. */}
-      <View style={StyleSheet.absoluteFill} className="flex-row">
-        <Animated.View style={{ flex: 1, opacity: readOpacity, backgroundColor: "#2563eb", flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 }}>
+      {/* Behind the row: Read (shown by a right swipe), Delete (a left swipe). Each covers the whole row, so the
+          color fills all the row uncovers, however far it slides (a mouse drag can carry it right out of the list). */}
+      <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { opacity: readOpacity, backgroundColor: "#2563eb", flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 }]}
+        >
           <ReadIcon size={18} color="#ffffff" />
           <Text size="sm" className="font-medium text-white">
             {unread ? "Read" : "Unread"}
           </Text>
         </Animated.View>
-        <Animated.View style={{ flex: 1, opacity: deleteOpacity, backgroundColor: "#dc2626", flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }}>
+        <Animated.View
+          style={[StyleSheet.absoluteFill, { opacity: deleteOpacity, backgroundColor: "#dc2626", flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }]}
+        >
           <RNPressable
             onPress={responder.remove}
             accessibilityRole="button"

@@ -58,6 +58,7 @@ interface Account {
   authType: AuthType;
   user: string;
   saveSentCopy: boolean;
+  importContacts: boolean;
   secret: () => string; // app password or Google refresh token
 }
 
@@ -79,6 +80,8 @@ export interface ListOptions {
   offset?: number;
   /** Free-text search (Gmail search syntax on Gmail; from/to/subject/body elsewhere). */
   query?: string;
+  /** Only unread messages. */
+  unread?: boolean;
 }
 
 const ROLE_BY_SPECIAL_USE: Record<string, FolderRole> = {
@@ -136,6 +139,7 @@ function loadEnvAccounts(env: NodeJS.ProcessEnv): Account[] {
             authType: "password" as const,
             user,
             saveSentCopy,
+            importContacts: false, // no account store: no calendar or contacts
             secret: () => pass,
           },
         ]
@@ -190,13 +194,14 @@ export class MailService {
       authType: a.auth.type,
       user: a.auth.user,
       saveSentCopy: a.saveSentCopy ?? false,
+      importContacts: a.importContacts ?? true,
       secret: () => store!.secret(a),
     }));
     return [...this.envAccounts, ...appAccounts];
   }
 
   listAccounts(): AccountInfo[] {
-    return this.all().map(({ id, label, color, signature, calendar, name, address, user, source, authType, saveSentCopy, imap }) => ({
+    return this.all().map(({ id, label, color, signature, calendar, name, address, user, source, authType, saveSentCopy, importContacts, imap }) => ({
       id,
       label,
       login: user,
@@ -208,6 +213,7 @@ export class MailService {
       source,
       authType,
       saveSentCopy,
+      importContacts,
       imapHost: imap.host,
     }));
   }
@@ -274,6 +280,7 @@ export class MailService {
       imap: input.imap,
       smtp: input.smtp,
       saveSentCopy: input.saveSentCopy ?? defaultSaveSentCopy(input.imap.host),
+      importContacts: input.importContacts ?? true,
       auth: { type: "password", user, secret: input.password },
     });
     return this.listAccounts().find((a) => a.id === stored.id)!;
@@ -425,18 +432,17 @@ export class MailService {
   }
 
   /** Newest messages first, `limit` at a time. */
-  async listMessages(id: AccountId, { folder = "INBOX", limit = 50, offset = 0, query }: ListOptions = {}): Promise<MessagePage> {
+  async listMessages(id: AccountId, { folder = "INBOX", limit = 50, offset = 0, query, unread = false }: ListOptions = {}): Promise<MessagePage> {
     const fields = HEADER_FIELDS;
     return this.withFolder(id, folder, async (imap) => {
       const messages: MessageHeader[] = [];
       let total: number;
-      if (query?.trim()) {
-        const q = query.trim();
+      if (query?.trim() || unread) {
+        const q = query?.trim() ?? "";
         const isGmail = imap.capabilities.has("X-GM-EXT-1");
-        const found = await imap.search(
-          isGmail ? { gmraw: q } : { or: [{ from: q }, { to: q }, { subject: q }, { body: q }] },
-          { uid: true },
-        );
+        if (unread) await imap.noop(); // see messages that arrived since the folder was selected
+        const text = q ? (isGmail ? { gmraw: q } : { or: [{ from: q }, { to: q }, { subject: q }, { body: q }] }) : {};
+        const found = await imap.search({ ...text, ...(unread ? { seen: false } : {}) }, { uid: true });
         const uids = (found || []).sort((a, b) => b - a);
         total = uids.length;
         const page = uids.slice(offset, offset + limit);
@@ -460,18 +466,18 @@ export class MailService {
   }
 
   /** Newest inbox messages across every account, merged by date. */
-  async listAllInboxes(limit = 50): Promise<MessagePage> {
-    return this.listAll("inbox", limit);
+  async listAllInboxes(limit = 50, unread = false): Promise<MessagePage> {
+    return this.listAll("inbox", limit, unread);
   }
 
   /** Newest messages of one kind of folder (Inbox or Sent) across every account, merged by date. */
-  async listAll(role: "inbox" | "sent", limit = 50): Promise<MessagePage> {
+  async listAll(role: "inbox" | "sent", limit = 50, unread = false): Promise<MessagePage> {
     const accounts = this.listAccounts();
     const results = await Promise.allSettled(
       accounts.map(async (a) => {
-        if (role === "inbox") return this.listMessages(a.id, { limit });
+        if (role === "inbox") return this.listMessages(a.id, { limit, unread });
         const sent = await this.folderForRole(a.id, ["sent"]);
-        return sent ? this.listMessages(a.id, { folder: sent.path, limit }) : { messages: [], total: 0 };
+        return sent ? this.listMessages(a.id, { folder: sent.path, limit, unread }) : { messages: [], total: 0 };
       }),
     );
     const page: MessagePage = { messages: [], total: 0, errors: [] };

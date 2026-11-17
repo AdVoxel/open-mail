@@ -1,13 +1,14 @@
 // Connecting an account's calendar (Gmail: Google sign-in, iCloud: on/off),
 // shown in Settings and on the Calendar screen.
 import { useEffect, useState } from "react";
-import { Linking, View } from "react-native";
+import { View } from "react-native";
 import type { AccountCalendarUpdate, AccountInfo, CalendarInfo, GoogleClientStatus } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { useApi, useConnection } from "@/src/lib/connection";
+import { connectGoogle as signInToGoogle } from "@/src/lib/googleConnect";
 import { useMail } from "@/src/lib/mail";
 import { ColorDot, LabeledInput, ToggleRow, useNotify } from "./kit";
 
@@ -149,20 +150,9 @@ export function AccountCalendarSettings({ account }: { account: AccountInfo }) {
 
   const connectGoogle = () =>
     run(async () => {
-      const { sessionId, url } = await api.connectGoogleCalendar(account.id);
-      await Linking.openURL(url);
-      const deadline = Date.now() + 5 * 60_000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const status = await api.googleSignInStatus(sessionId);
-        if (status.status === "done") {
-          notify("Google Calendar connected", account.address);
-          return;
-        }
-        if (status.status === "error") throw new Error(status.error ?? "Google sign-in failed");
-      }
-      throw new Error("Google sign-in timed out");
-    }, "Couldn't connect Google Calendar");
+      await signInToGoogle(api, account.id);
+      notify("Google connected", `${account.address}: calendar and contacts`);
+    }, "Couldn't connect Google");
 
   const toggleCalendar = (id: string, visible: boolean) =>
     update({ hidden: visible ? calendar.hidden.filter((h) => h !== id) : [...calendar.hidden, id] });
@@ -176,11 +166,12 @@ export function AccountCalendarSettings({ account }: { account: AccountInfo }) {
         capabilities?.googleCalendar ? (
           <View className="items-start gap-2">
             <Text size="xs" className="text-muted-foreground">
-              Gmail calendars need a Google sign-in; the app password only covers mail. Sign in with {account.login || account.address}
-              {account.login && account.login.toLowerCase() !== account.address.toLowerCase() ? ` (the account ${account.address} belongs to)` : ""}.
+              Gmail calendars and contacts need a Google sign-in; the app password only covers mail. Sign in with the login{" "}
+              {account.login || account.address}
+              {account.login && account.login.toLowerCase() !== account.address.toLowerCase() ? `, not the sender address ${account.address}` : ""}.
             </Text>
             <Button size="sm" variant="outline" className="rounded-lg" disabled={busy} onPress={() => void connectGoogle()}>
-              <ButtonText>{busy ? "Waiting for Google…" : "Connect Google Calendar"}</ButtonText>
+              <ButtonText>{busy ? "Waiting for Google…" : "Connect Google (calendar & contacts)"}</ButtonText>
             </Button>
             {changingClient ? (
               <GoogleClientForm onDone={() => setChangingClient(false)} />
@@ -223,9 +214,12 @@ export function AccountCalendarSettings({ account }: { account: AccountInfo }) {
             </View>
           ) : null}
           {calendar.provider === "google" ? (
-            <View className="items-start">
+            <View className="flex-row flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" className="rounded-lg" disabled={busy} onPress={() => void connectGoogle()}>
+                <ButtonText>{busy ? "Waiting for Google…" : "Reconnect Google"}</ButtonText>
+              </Button>
               <Button size="sm" variant="ghost" className="rounded-lg" disabled={busy} onPress={() => void run(() => api.disconnectGoogleCalendar(account.id), "Couldn't disconnect")}>
-                <ButtonText>Disconnect Google Calendar</ButtonText>
+                <ButtonText>Disconnect Google</ButtonText>
               </Button>
             </View>
           ) : null}

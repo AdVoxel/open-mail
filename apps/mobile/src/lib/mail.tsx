@@ -49,6 +49,9 @@ interface MailState {
   /** Show one list row per conversation instead of one per message. */
   groupConversations: boolean;
   setGroupConversations: (on: boolean) => void;
+  /** Hide read mail: the list shows unread messages only. */
+  unreadOnly: boolean;
+  setUnreadOnly: (on: boolean) => void;
   /** How often to check for new mail, in seconds. */
   checkInterval: CheckInterval;
   setCheckInterval: (seconds: CheckInterval) => void;
@@ -60,6 +63,7 @@ export type CheckInterval = (typeof CHECK_INTERVALS)[number];
 
 const PAGE = 50;
 const GROUP_KEY = "mail.groupConversations";
+const UNREAD_KEY = "mail.unreadOnly";
 const INTERVAL_KEY = "mail.checkInterval";
 const EMPTY: ListState = { messages: [], total: 0, loading: true, loadingMore: false, error: null, accountErrors: [], updatedAt: null };
 const Context = createContext<MailState | null>(null);
@@ -74,6 +78,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<ListState>(EMPTY);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [groupConversations, setGroupState] = useState(true);
+  const [unreadOnly, setUnreadState] = useState(false);
   const [checkInterval, setIntervalState] = useState<CheckInterval>(60);
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const requestId = useRef(0);
@@ -127,11 +132,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
     async (offset: number, limit: number) => {
       if (mailbox.accountId === null) {
         const count = Math.min(offset + limit, 200);
-        return mailbox.folder === ALL_SENT ? api.allSent(count) : api.allInboxes(count);
+        return mailbox.folder === ALL_SENT ? api.allSent(count, unreadOnly) : api.allInboxes(count, unreadOnly);
       }
-      return api.messages(mailbox.accountId, { folder: mailbox.folder, offset, limit, q: query || undefined });
+      return api.messages(mailbox.accountId, { folder: mailbox.folder, offset, limit, q: query || undefined, unread: unreadOnly });
     },
-    [api, mailbox, query],
+    [api, mailbox, query, unreadOnly],
   );
 
   const refresh = useCallback(async () => {
@@ -164,7 +169,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
     setSelectedKey(null);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mailbox, query, api]);
+  }, [mailbox, query, api, unreadOnly]);
 
   // Keep the list fresh while the app is in the foreground.
   useEffect(() => {
@@ -209,6 +214,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void loadJson<boolean>(GROUP_KEY).then((saved) => saved !== null && setGroupState(saved));
+    void loadJson<boolean>(UNREAD_KEY).then((saved) => saved !== null && setUnreadState(saved));
     void loadJson<number>(INTERVAL_KEY).then(
       (saved) => saved !== null && (CHECK_INTERVALS as readonly number[]).includes(saved) && setIntervalState(saved as CheckInterval),
     );
@@ -217,6 +223,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
   const setCheckInterval = useCallback((seconds: CheckInterval) => {
     setIntervalState(seconds);
     void saveJson(INTERVAL_KEY, seconds);
+  }, []);
+
+  const setUnreadOnly = useCallback((on: boolean) => {
+    setUnreadState(on);
+    void saveJson(UNREAD_KEY, on);
   }, []);
 
   const setGroupConversations = useCallback((on: boolean) => {
@@ -250,6 +261,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       setSelectedKey,
       groupConversations,
       setGroupConversations,
+      unreadOnly,
+      setUnreadOnly,
       checkInterval,
       setCheckInterval,
       labels,
@@ -273,6 +286,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       selectedKey,
       groupConversations,
       setGroupConversations,
+      unreadOnly,
+      setUnreadOnly,
       checkInterval,
       setCheckInterval,
       labels,

@@ -13,6 +13,7 @@ import { MailboxNav } from "@/src/components/MailboxNav";
 import { LockScreen } from "@/src/components/LockScreen";
 import { MinimizedDrafts } from "@/src/components/MinimizedDrafts";
 import { ConnectionProvider, useConnection } from "@/src/lib/connection";
+import { ContactsProvider } from "@/src/lib/contacts";
 import { DraftsProvider } from "@/src/lib/drafts";
 import { LockProvider, useLock } from "@/src/lib/lock";
 import { blockContextMenu } from "@/src/lib/contextMenu";
@@ -37,6 +38,7 @@ function Screens() {
       <Stack.Screen name="mailboxes" options={{ animation: "slide_from_left" }} />
       <Stack.Screen name="compose" options={{ animation: "slide_from_bottom" }} />
       <Stack.Screen name="scheduled" />
+      <Stack.Screen name="contacts" />
       <Stack.Screen name="calendar" />
       <Stack.Screen name="event" options={{ animation: "slide_from_bottom" }} />
       <Stack.Screen name="settings" />
@@ -80,6 +82,7 @@ function Shell() {
       <UnreadBadge />
       <LockProvider>
       <NotificationsProvider>
+        <ContactsProvider>
         <DraftsProvider>
           {isWide ? (
             <View className="flex-1 flex-row bg-background">
@@ -93,6 +96,7 @@ function Shell() {
           )}
           <MinimizedDrafts />
         </DraftsProvider>
+        </ContactsProvider>
       </NotificationsProvider>
       <LockScreen />
       </LockProvider>

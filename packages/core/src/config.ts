@@ -43,6 +43,8 @@ export interface StoredAccount {
   imap: HostConfig;
   smtp: HostConfig;
   saveSentCopy?: boolean;
+  /** Import the address book (missing: on). */
+  importContacts?: boolean;
   calendar?: {
     enabled?: boolean;
     hidden?: string[];
@@ -97,6 +99,7 @@ export class ConfigStore {
     if (update.signature !== undefined) account.signature = update.signature;
     if (update.name !== undefined) account.name = update.name;
     if (update.saveSentCopy !== undefined) account.saveSentCopy = update.saveSentCopy;
+    if (update.importContacts !== undefined) account.importContacts = update.importContacts;
     this.save();
   }
 

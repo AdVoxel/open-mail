@@ -3,7 +3,7 @@
 import { refreshGoogleAccessToken, type GoogleClientSource } from "./google-oauth.js";
 import { MailError } from "./mail.js";
 import { paletteColor } from "./presets.js";
-import type { AccountId, CalendarEvent, CalendarInfo, EventInput, InvitationResponse, InvitationStatus } from "./types.js";
+import type { AccountId, CalendarEvent, CalendarInfo, EventGuest, EventInput, InvitationResponse, InvitationStatus } from "./types.js";
 
 const API = "https://www.googleapis.com/calendar/v3";
 const CALENDARS_MS = 5 * 60_000;
@@ -32,6 +32,8 @@ interface GoogleAttendee {
   email?: string;
   displayName?: string;
   self?: boolean;
+  organizer?: boolean;
+  resource?: boolean;
   responseStatus?: "needsAction" | "accepted" | "tentative" | "declined";
 }
 
@@ -166,19 +168,21 @@ export class GoogleCalendars {
 
   async createEvent(id: AccountId, calendarId: string, input: EventInput): Promise<CalendarEvent> {
     if (!(await this.writable(id, calendarId))) throw new MailError(403, "This calendar is read-only");
-    const event = await this.request<GoogleEvent>(id, `/calendars/${encodeURIComponent(calendarId)}/events`, {
+    // sendUpdates=all: Google emails the invitations.
+    const event = await this.request<GoogleEvent>(id, `/calendars/${encodeURIComponent(calendarId)}/events?sendUpdates=all`, {
       method: "POST",
-      body: toGoogle(input),
+      body: toGoogle(input, []),
     });
     return fromGoogle(event, id, calendarId, true, this.defaultAlerts(id, calendarId));
   }
 
   async updateEvent(id: AccountId, calendarId: string, eventId: string, input: EventInput): Promise<CalendarEvent> {
-    await this.editable(id, calendarId, eventId);
+    const current = await this.editable(id, calendarId, eventId);
     // PATCH: fields the app doesn't send (reminders, colors, conferencing…) stay as they are.
-    const event = await this.request<GoogleEvent>(id, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+    // sendUpdates=all: guests get the change (new guests their invitation).
+    const event = await this.request<GoogleEvent>(id, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: "PATCH",
-      body: toGoogle(input),
+      body: toGoogle(input, current.attendees ?? []),
     });
     return fromGoogle(event, id, calendarId, true, this.defaultAlerts(id, calendarId));
   }
@@ -197,16 +201,18 @@ export class GoogleCalendars {
 
   async deleteEvent(id: AccountId, calendarId: string, eventId: string): Promise<void> {
     await this.editable(id, calendarId, eventId);
-    await this.request(id, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+    // Guests are told it's cancelled.
+    await this.request(id, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`, { method: "DELETE" });
   }
 
-  private async editable(id: AccountId, calendarId: string, eventId: string): Promise<void> {
+  private async editable(id: AccountId, calendarId: string, eventId: string): Promise<GoogleEvent> {
     const writable = await this.writable(id, calendarId);
     const event = await this.request<GoogleEvent>(id, `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`);
     const current = fromGoogle(event, id, calendarId, writable, []);
     if (!writable) throw new MailError(403, "This calendar is read-only");
     if (current.recurring) throw new MailError(409, "Repeating events can't be changed from the app yet");
-    if (current.hasAttendees) throw new MailError(409, "Events with guests can't be changed from the app yet");
+    if (!current.editable) throw new MailError(409, "Only the organizer can change an event with guests");
+    return event;
   }
 }
 
@@ -217,6 +223,11 @@ function fromGoogle(e: GoogleEvent, accountId: AccountId, calendarId: string, wr
   const recurring = Boolean(e.recurringEventId || e.recurrence?.length);
   const hasAttendees = (e.attendees ?? []).some((a) => !a.self);
   const me = (e.attendees ?? []).find((a) => a.self);
+  // No organizer field: an event in your own calendar, so yours.
+  const organizing = !e.organizer || Boolean(e.organizer.self);
+  const guests: EventGuest[] = (e.attendees ?? [])
+    .filter((a) => !a.self && !a.resource && a.email)
+    .map((a) => ({ email: a.email!, name: a.displayName ?? "", status: STATUS[a.responseStatus ?? "needsAction"] ?? "needs-action" }));
   return {
     id: e.id,
     accountId,
@@ -229,7 +240,8 @@ function fromGoogle(e: GoogleEvent, accountId: AccountId, calendarId: string, wr
     description: e.description ?? "",
     recurring,
     hasAttendees,
-    editable: writable && !recurring && !hasAttendees,
+    guests,
+    editable: writable && !recurring && (!hasAttendees || organizing),
     alerts: e.reminders?.useDefault === false ? popupMinutes(e.reminders.overrides) : defaultAlerts,
     invitation:
       me && !e.organizer?.self
@@ -238,7 +250,16 @@ function fromGoogle(e: GoogleEvent, accountId: AccountId, calendarId: string, wr
   };
 }
 
-function toGoogle(input: EventInput) {
+/** The new guest list, keeping what Google knows of guests already invited (their answers, you, rooms). */
+function attendeesFor(guests: string[], current: GoogleAttendee[]): GoogleAttendee[] {
+  const wanted = new Map(guests.map((g): [string, string] => [g.trim().toLowerCase(), g.trim()]));
+  const kept = current.filter((a) => a.self || a.resource || wanted.has((a.email ?? "").toLowerCase()));
+  const have = new Set(kept.map((a) => (a.email ?? "").toLowerCase()));
+  const added = [...wanted].filter(([key]) => !have.has(key)).map(([, email]) => ({ email }));
+  return [...kept, ...added];
+}
+
+function toGoogle(input: EventInput, current: GoogleAttendee[]) {
   // Both keys, so switching between all-day and timed clears the other one on PATCH.
   const time = (value: string) => (input.allDay ? { date: value.slice(0, 10), dateTime: null } : { dateTime: new Date(value).toISOString(), date: null });
   return {
@@ -247,5 +268,6 @@ function toGoogle(input: EventInput) {
     description: input.description ?? "",
     start: time(input.start),
     end: time(input.end),
+    ...(input.guests ? { attendees: attendeesFor(input.guests, current) } : {}),
   };
 }

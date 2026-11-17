@@ -17,6 +17,7 @@ import { Pressable } from "@/components/ui/pressable";
 import { Switch } from "@/components/ui/switch";
 import { Text } from "@/components/ui/text";
 import { ColorDot, Header, IconButton, Loading, Segmented, useConfirm, useNotify, type NotifyOptions } from "@/src/components/kit";
+import { RecipientInput } from "@/src/components/RecipientInput";
 import { RichEditor } from "@/src/components/RichEditor";
 import { SignaturePreview } from "@/src/components/SignaturePreview";
 import { pickFiles, type PickedFile } from "@/src/components/pickFiles";
@@ -43,9 +44,10 @@ const TITLES: Record<Mode, string> = {
 
 type ServerDraft = { accountId: string; folder: string; uid: number };
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/** `layer`: fields with address suggestions draw above the ones after them (web stacks every view on its own). */
+function Field({ label, children, layer }: { label: string; children: React.ReactNode; layer?: number }) {
   return (
-    <View className="min-h-12 flex-row items-center gap-3 border-b border-border/70 px-1">
+    <View className="min-h-12 flex-row items-center gap-3 border-b border-border/70 px-1" style={layer ? { zIndex: layer } : undefined}>
       <Text size="sm" className="w-14 text-muted-foreground">
         {label}
       </Text>
@@ -68,6 +70,8 @@ export default function ComposeScreen() {
     scheduledId?: string;
     /** A draft minimized to a bar, being reopened. */
     draft?: string;
+    /** New message to this address (from Contacts). */
+    to?: string;
   }>();
   const drafts = useDrafts();
   const [sendDelay] = useSendDelay();
@@ -209,6 +213,12 @@ export default function ComposeScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, mode, params.scheduledId, params.accountId, params.folder, params.uid, params.draft]);
+
+  // New message from Contacts: start with that address.
+  useEffect(() => {
+    if (mode === "new" && params.to && !params.draft) setTo(params.to);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.to]);
 
   /** Keeps the draft in a bar at the bottom of the screen and goes back to the mail. */
   /** Everything on the screen, to minimize it or bring it back after Undo. */
@@ -560,16 +570,12 @@ export default function ComposeScreen() {
               </ScrollView>
             </Field>
           ) : null}
-          <Field label="To">
-            <TextInput
+          <Field label="To" layer={3}>
+            <RecipientInput
               value={to}
               onChangeText={markEdited(setTo)}
-              autoFocus={mode === "new" || mode === "forward"}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="email-address"
-              placeholder="name@example.com, …"
-              placeholderTextColor={colors.muted}
+              autoFocus={(mode === "new" && !params.to) || mode === "forward"}
+              placeholder="Name or name@example.com, …"
               className={inputClass}
             />
             {!showCc ? (
@@ -582,11 +588,11 @@ export default function ComposeScreen() {
           </Field>
           {showCc ? (
             <>
-              <Field label="Cc">
-                <TextInput value={cc} onChangeText={markEdited(setCc)} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" className={inputClass} />
+              <Field label="Cc" layer={2}>
+                <RecipientInput value={cc} onChangeText={markEdited(setCc)} className={inputClass} />
               </Field>
-              <Field label="Bcc">
-                <TextInput value={bcc} onChangeText={markEdited(setBcc)} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" className={inputClass} />
+              <Field label="Bcc" layer={1}>
+                <RecipientInput value={bcc} onChangeText={markEdited(setBcc)} className={inputClass} />
               </Field>
             </>
           ) : null}

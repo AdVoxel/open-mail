@@ -15,7 +15,6 @@ import {
   MessagesSquare,
   Paperclip,
   PenSquare,
-  RefreshCw,
   Search,
   Star,
   Tag,
@@ -30,7 +29,7 @@ import { formatListDate } from "@/src/lib/format";
 import { ALL_SENT, groupByConversation, useMail, useMailboxTitle, type Conversation } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
 import { useMessageActions } from "@/src/lib/useMessageActions";
-import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading } from "./kit";
+import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading, RefreshButton } from "./kit";
 import { OpensPopover } from "./OpensPopover";
 import { SwipeRow, useJustSwiped } from "./SwipeRow";
 import { Tooltip } from "./Tooltip";
@@ -198,6 +197,8 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
     setQuery,
     selectedKey,
     groupConversations,
+    unreadOnly,
+    setUnreadOnly,
     setGroupConversations,
     labels: allLabels,
     folders,
@@ -225,7 +226,11 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
     );
   }, [unified, draft, list.messages]);
 
-  const rows = useMemo(() => groupByConversation(messages, groupConversations), [messages, groupConversations]);
+  // Unread only: mail read here (opened, swiped) leaves the list too, except the one open in the reader.
+  const rows = useMemo(() => {
+    const all = groupByConversation(messages, groupConversations);
+    return unreadOnly ? all.filter((c) => c.unread || messageKey(c.latest) === selectedKey) : all;
+  }, [messages, groupConversations, unreadOnly, selectedKey]);
 
   // Sent views: opens of tracked messages, refreshed with the list. Older servers: none.
   useEffect(() => {
@@ -304,6 +309,17 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
       left={!isWide ? <IconButton icon={Menu} label="Mailboxes" onPress={() => router.push("/mailboxes")} /> : undefined}
       right={
         <>
+          <Pressable
+            onPress={() => setUnreadOnly(!unreadOnly)}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: unreadOnly }}
+            accessibilityLabel={unreadOnly ? "Showing unread mail only; show all" : "Show unread mail only"}
+            className={`mr-1 h-7 justify-center rounded-full border px-3 ${unreadOnly ? "border-primary bg-primary" : "border-border data-[hover=true]:bg-accent"}`}
+          >
+            <Text size="xs" className={`font-medium ${unreadOnly ? "text-primary-foreground" : "text-foreground"}`}>
+              Unread
+            </Text>
+          </Pressable>
           <IconButton
             icon={groupConversations ? MessagesSquare : List}
             label={groupConversations ? "Show single messages" : "Group by conversation"}
@@ -311,7 +327,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
             onPress={() => setGroupConversations(!groupConversations)}
           />
           <IconButton icon={Search} label="Search" active={searching} onPress={() => setSearching((s) => !s)} />
-          <IconButton icon={RefreshCw} label="Refresh" onPress={() => void refresh()} disabled={list.loading} />
+          <RefreshButton onPress={refresh} busy={list.loading} />
           {!isWide ? <IconButton icon={PenSquare} label="New message" onPress={() => router.push("/compose")} /> : null}
         </>
       }
@@ -414,7 +430,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
         }
         ListEmptyComponent={
           list.error ? undefined : (
-            <EmptyState icon={Inbox} title={query || draft ? "No matches" : "Nothing here"} message={query ? `No messages match “${query}”.` : undefined} />
+            <EmptyState icon={Inbox} title={query || draft ? "No matches" : unreadOnly ? "No unread mail" : "Nothing here"} message={query ? `No messages match “${query}”.` : undefined} />
           )
         }
         ListFooterComponent={

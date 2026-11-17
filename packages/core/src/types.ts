@@ -27,6 +27,8 @@ export interface AccountInfo {
   saveSentCopy: boolean;
   imapHost: string;
   calendar: AccountCalendar;
+  /** Import this account's address book on its own (iCloud; Gmail once Google is connected). Missing on older servers. */
+  importContacts?: boolean;
 }
 
 /** Calendars the server can reach for an account: iCloud over CalDAV, Gmail over the Google Calendar API. */
@@ -80,7 +82,9 @@ export interface CalendarEvent {
   recurring: boolean;
   /** Has guests (changing it would notify them). */
   hasAttendees: boolean;
-  /** Can be changed from the app: a single event, no guests, in a writable calendar. */
+  /** The guests (other than you) and their answers. Missing on older servers. */
+  guests?: EventGuest[];
+  /** Can be changed from the app: a single event you organize (or without guests), in a writable calendar. */
   editable: boolean;
   /** Alerts, in minutes before the start (0 = at the start). */
   alerts: number[];
@@ -89,6 +93,13 @@ export interface CalendarEvent {
 }
 
 export type InvitationStatus = "needs-action" | "accepted" | "tentative" | "declined";
+
+/** Someone invited to an event. */
+export interface EventGuest {
+  email: string;
+  name: string;
+  status: InvitationStatus;
+}
 /** What you can answer to an invitation. */
 export type InvitationResponse = "accepted" | "tentative" | "declined";
 
@@ -106,12 +117,45 @@ export interface EventInput {
   allDay: boolean;
   location?: string;
   description?: string;
+  /** Guests' addresses: they're sent invitations (and updates). Missing: leave the guests as they are. */
+  guests?: string[];
 }
 
 export interface CalendarPage {
   calendars: CalendarInfo[];
   /** Accounts whose calendars couldn't be read. */
   errors: { accountId: AccountId; error: string }[];
+}
+
+/** A person from an account's address book (Google Contacts or iCloud Contacts). */
+export interface Contact {
+  /** Unique across accounts. */
+  id: string;
+  accountId: AccountId;
+  name: string;
+  emails: string[];
+  phones: string[];
+  organization: string;
+  /** Google's "Other contacts": people you've emailed, saved by Gmail on its own. */
+  auto?: boolean;
+}
+
+/** New values of a contact (replaces its name, company, emails and phones; the rest of the card is kept). */
+export interface ContactUpdate {
+  name: string;
+  organization: string;
+  emails: string[];
+  phones: string[];
+}
+
+export interface ContactsPage {
+  contacts: Contact[];
+  /** Accounts whose contacts couldn't be read (their last imported contacts are still listed). */
+  errors: { accountId: AccountId; error: string }[];
+  /** When the contacts were last imported (ISO), null before the first import. */
+  updatedAt: string | null;
+  /** An import is running. */
+  refreshing: boolean;
 }
 
 export interface EventsPage {
@@ -130,6 +174,8 @@ export interface AccountInput {
   imap: HostConfig;
   smtp: HostConfig;
   saveSentCopy?: boolean;
+  /** Default: on. */
+  importContacts?: boolean;
 }
 
 export interface AccountUpdate {
@@ -138,6 +184,7 @@ export interface AccountUpdate {
   signature?: string;
   name?: string;
   saveSentCopy?: boolean;
+  importContacts?: boolean;
 }
 
 /** IMAP special-use roles we care about. */
