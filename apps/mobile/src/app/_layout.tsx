@@ -1,5 +1,5 @@
 import "@/globals.css";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Platform, View } from "react-native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -20,7 +20,7 @@ import { blockContextMenu } from "@/src/lib/contextMenu";
 import { useIsWide } from "@/src/lib/format";
 import { MailProvider } from "@/src/lib/mail";
 import { NotificationsProvider } from "@/src/lib/notifications";
-import { ThemeModeProvider, useColors } from "@/src/lib/theme";
+import { ThemeModeProvider, useColors, useSurfaceVars } from "@/src/lib/theme";
 import { useUnreadBadge } from "@/src/lib/unread";
 
 function Screens() {
@@ -104,6 +104,16 @@ function Shell() {
   );
 }
 
+/** The app's root view, carrying the chosen main-panel background. */
+function ThemedRoot({ children }: { children: ReactNode }) {
+  const style = useSurfaceVars();
+  return (
+    <View className="flex-1 bg-background" style={style}>
+      {children}
+    </View>
+  );
+}
+
 function ThemedStatusBar() {
   const { dark } = useColors();
   return <StatusBar style={dark ? "light" : "dark"} />;
@@ -125,9 +135,9 @@ export default function RootLayout() {
             <ThemedStatusBar />
             <ConnectionProvider>
               <ConfirmProvider>
-                <View className="flex-1 bg-background">
+                <ThemedRoot>
                   <Shell />
-                </View>
+                </ThemedRoot>
               </ConfirmProvider>
             </ConnectionProvider>
           </GluestackUIProvider>

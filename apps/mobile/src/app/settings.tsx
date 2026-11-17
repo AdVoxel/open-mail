@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { ArrowLeft, Check, ChevronDown, ChevronUp, Trash2 } from "lucide-react-native";
@@ -37,7 +37,7 @@ import { AUTO_LOCK_OPTIONS, useLock, type AutoLock } from "@/src/lib/lock";
 import { useNotifications } from "@/src/lib/notifications";
 import { SEND_DELAYS, useSendDelay, type SendDelay } from "@/src/lib/sendDelay";
 import { useAutoDrafts, useTrackOpens } from "@/src/lib/composePrefs";
-import { ACCENTS, useColors, useThemeMode } from "@/src/lib/theme";
+import { ACCENTS, SURFACE_PRESETS, useColors, useThemeMode, type SurfaceArea } from "@/src/lib/theme";
 
 const inputClass = "h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground font-sans web:outline-none";
 
@@ -763,6 +763,76 @@ function AccentPicker() {
   );
 }
 
+/**
+ * Background of one area: presets for the theme in use, a custom #rrggbb, or
+ * the default. Light and dark mode keep their own choice.
+ */
+function SurfacePicker({ area, title, hint }: { area: SurfaceArea; title: string; hint: string }) {
+  const { surfaces, setSurface } = useThemeMode();
+  const colors = useColors();
+  const theme = colors.dark ? "dark" : "light";
+  const chosen = surfaces[theme][area];
+  const current = area === "panel" ? colors.background : colors.surface;
+  const [custom, setCustom] = useState(chosen ?? "");
+  useEffect(() => setCustom(chosen ?? ""), [chosen]);
+  const valid = /^#?[0-9a-f]{6}$/i.test(custom.trim());
+  const applyCustom = () => valid && setSurface(area, `#${custom.trim().replace(/^#/, "")}`);
+
+  return (
+    <View className="gap-2">
+      <View>
+        <Text size="sm" className="font-medium">
+          {title}
+        </Text>
+        <Text size="xs" className="text-muted-foreground">
+          {hint} For {theme} mode; {theme === "dark" ? "light" : "dark"} mode keeps its own.
+        </Text>
+      </View>
+      <View className="flex-row flex-wrap items-center gap-2">
+        {SURFACE_PRESETS[theme].map((p) => {
+          const on = current.toLowerCase() === p.color;
+          return (
+            <Pressable
+              key={p.color}
+              onPress={() => setSurface(area, p.color)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={p.label}
+              style={{ backgroundColor: p.color }}
+              className={`h-8 w-8 items-center justify-center rounded-full border ${on ? "border-2 border-foreground" : "border-border"}`}
+            >
+              {on ? <Check size={14} color={colors.foreground} strokeWidth={3} /> : null}
+            </Pressable>
+          );
+        })}
+        <View className="h-8 flex-row items-center gap-1.5 rounded-full border border-border pl-1 pr-2">
+          <View style={{ backgroundColor: valid ? `#${custom.trim().replace(/^#/, "")}` : current }} className="h-6 w-6 rounded-full border border-border" />
+          <TextInput
+            value={custom}
+            onChangeText={setCustom}
+            onSubmitEditing={applyCustom}
+            onBlur={applyCustom}
+            placeholder="#rrggbb"
+            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={7}
+            accessibilityLabel={`${title}: custom color`}
+            className="h-8 w-20 text-sm text-foreground font-sans web:outline-none"
+          />
+        </View>
+        {chosen ? (
+          <Pressable onPress={() => setSurface(area, null)} className="rounded-md px-2 py-1 data-[hover=true]:bg-accent">
+            <Text size="sm" className="text-muted-foreground underline">
+              Default
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 /** "30 s", "1 min", "15 min". */
 function intervalLabel(seconds: number): string {
   return seconds < 60 ? `${seconds} s` : `${seconds / 60} min`;
@@ -856,6 +926,8 @@ export default function SettingsScreen() {
             />
           </View>
           <AccentPicker />
+          <SurfacePicker area="panel" title="Main panel" hint="Behind the mail list, messages and the other screens." />
+          <SurfacePicker area="drawer" title="Sidebar and drawers" hint="The mailboxes sidebar, the phone's mailboxes drawer and pop-ups." />
         </Card>
       </ScrollView>
     </KeyboardAvoidingView>

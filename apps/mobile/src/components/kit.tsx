@@ -163,17 +163,23 @@ export function Header({
   left,
   right,
   safeTop = false,
+  background,
 }: {
   title?: ReactNode;
   subtitle?: string;
   left?: ReactNode;
   right?: ReactNode;
   safeTop?: boolean;
+  /** Background other than the panel's (e.g. the drawer color). */
+  background?: string;
 }) {
   const insets = useSafeAreaInsets();
   return (
     // Above what follows, so the buttons' tooltips (which hang below the bar) aren't painted over.
-    <View style={{ paddingTop: safeTop ? insets.top : 0, zIndex: 10 }} className="border-b border-border bg-background">
+    <View
+      style={{ paddingTop: safeTop ? insets.top : 0, zIndex: 10, ...(background ? { backgroundColor: background } : {}) }}
+      className="border-b border-border bg-background"
+    >
       <View className="h-14 flex-row items-center gap-1 px-3">
         {left}
         <View className="min-w-0 flex-1 px-1">

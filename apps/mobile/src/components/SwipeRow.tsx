@@ -14,6 +14,11 @@ const DELETE_TRIGGER_MAX = 200;
 const FLICK = 0.5;
 const useNativeDriver = Platform.OS !== "web";
 
+/** Where a left swipe deletes when let go: half the row, but never further than DELETE_TRIGGER_MAX. */
+function deleteThreshold(width: number): number {
+  return -Math.min(width / 2, DELETE_TRIGGER_MAX);
+}
+
 const SwipeGuard = createContext<() => boolean>(() => false);
 
 /**
@@ -44,6 +49,8 @@ export function SwipeRow({
 }) {
   const x = useRef(new Animated.Value(0)).current;
   const width = useRef(0);
+  /** The row's width as state too: the delete threshold's highlight depends on it. */
+  const [rowWidth, setRowWidth] = useState(0);
   const rest = useRef(0); // 0, or -REVEAL while the Delete button is showing
   const [open, setOpen] = useState(false);
   const swipedAt = useRef(0);
@@ -76,7 +83,7 @@ export function SwipeRow({
       swipedAt.current = Date.now();
       const pos = Math.max(-width.current, Math.min(rest.current + dx, width.current * 0.4));
       currentX.current = pos;
-      const deleteAt = -Math.min(width.current / 2, DELETE_TRIGGER_MAX);
+      const deleteAt = deleteThreshold(width.current);
       if (pos > READ_TRIGGER || (vx > FLICK && pos > READ_TRIGGER / 3 && rest.current === 0)) {
         settle(0, vx);
         handlers.current.onToggleRead();
@@ -112,17 +119,33 @@ export function SwipeRow({
   const ReadIcon = unread ? MailOpen : Mail;
   const colors = useColors();
   // Each color only shows while the row is dragged its way, never at rest.
-  const readOpacity = x.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: "clamp" });
-  const deleteOpacity = x.interpolate({ inputRange: [-1, 0], outputRange: [1, 0], extrapolate: "clamp" });
+  // While dragging: a neutral gray. Past the point where letting go acts, the action's color
+  // (blue: read/unread, red: delete), so you see before releasing that it will happen.
+  const dragged = x.interpolate({ inputRange: [-1, 0, 1], outputRange: [1, 0, 1], extrapolate: "clamp" });
+  const readArmed = x.interpolate({ inputRange: [READ_TRIGGER, READ_TRIGGER + 1], outputRange: [0, 1], extrapolate: "clamp" });
+  const deleteAt = deleteThreshold(rowWidth);
+  const deleteArmed = x.interpolate({ inputRange: [deleteAt - 1, deleteAt], outputRange: [1, 0], extrapolate: "clamp" });
+  const readSide = x.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: "clamp" });
+  const deleteSide = x.interpolate({ inputRange: [-1, 0], outputRange: [1, 0], extrapolate: "clamp" });
+  const neutral = colors.dark ? "#3f3f46" : "#a1a1aa";
 
   return (
-    <View onLayout={(e) => (width.current = e.nativeEvent.layout.width)} className="overflow-hidden">
-      {/* Behind the row: Read (shown by a right swipe), Delete (a left swipe). Each covers the whole row, so the
-          color fills all the row uncovers, however far it slides (a mouse drag can carry it right out of the list). */}
+    <View
+      onLayout={(e) => {
+        width.current = e.nativeEvent.layout.width;
+        setRowWidth(e.nativeEvent.layout.width);
+      }}
+      className="overflow-hidden"
+    >
+      {/* Behind the row, all covering the whole row however far it slides: gray while dragging, then the
+          action's color once letting go would act. The Delete button stays red (it can be tapped when shown). */}
       <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: dragged, backgroundColor: neutral }]} />
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: readArmed, backgroundColor: "#2563eb" }]} />
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: deleteArmed, backgroundColor: "#dc2626" }]} />
         <Animated.View
           pointerEvents="none"
-          style={[StyleSheet.absoluteFill, { opacity: readOpacity, backgroundColor: "#2563eb", flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 }]}
+          style={[StyleSheet.absoluteFill, { opacity: readSide, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 }]}
         >
           <ReadIcon size={18} color="#ffffff" />
           <Text size="sm" className="font-medium text-white">
@@ -130,13 +153,14 @@ export function SwipeRow({
           </Text>
         </Animated.View>
         <Animated.View
-          style={[StyleSheet.absoluteFill, { opacity: deleteOpacity, backgroundColor: "#dc2626", flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }]}
+          pointerEvents="box-none"
+          style={[StyleSheet.absoluteFill, { opacity: deleteSide, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" }]}
         >
           <RNPressable
             onPress={responder.remove}
             accessibilityRole="button"
             accessibilityLabel="Delete"
-            style={{ width: REVEAL }}
+            style={{ width: REVEAL, backgroundColor: "#dc2626" }}
             className="h-full items-center justify-center gap-1"
           >
             <Trash2 size={18} color="#ffffff" />
