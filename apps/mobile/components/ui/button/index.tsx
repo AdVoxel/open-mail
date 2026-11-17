@@ -140,11 +140,15 @@ type IButtonProps = Omit<
 const Button = React.forwardRef<
   React.ElementRef<typeof UIButton>,
   IButtonProps
->(({ className, variant = 'default', size = 'default', ...props }, ref) => {
+>(({ className, variant = 'default', size = 'default', disabled, isDisabled, ...props }, ref) => {
+  // The app passes `disabled`; gluestack only marks the button (data-disabled: faded) for `isDisabled`.
+  const off = Boolean(isDisabled ?? disabled);
   return (
     <UIButton
       ref={ref}
       {...props}
+      disabled={off}
+      isDisabled={off}
       className={buttonStyle({ variant, size, class: className })}
       context={{ variant, size }}
     />
