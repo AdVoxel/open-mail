@@ -415,10 +415,31 @@ export class MailService {
         }));
       const rank = (f: Folder) => (f.role ? ROLE_ORDER.indexOf(f.role) : ROLE_ORDER.length);
       folders.sort((a, b) => rank(a) - rank(b) || a.path.localeCompare(b.path));
+      if (fresh) await this.recountInbox(id, folders);
       this.folderCache.set(id, { at: Date.now(), folders });
       return folders;
     } finally {
       this.touch(id);
+    }
+  }
+
+  /**
+   * The pooled connection keeps the inbox selected, and servers (Gmail among
+   * them) often answer STATUS for the selected folder with old numbers. A fresh
+   * count asks the inbox itself: its unread messages, by search.
+   */
+  private async recountInbox(id: AccountId, folders: Folder[]): Promise<void> {
+    const inbox = folders.find((f) => f.role === "inbox");
+    if (!inbox) return;
+    try {
+      await this.withFolder(id, inbox.path, async (imap) => {
+        await imap.noop(); // take in what changed since the folder was selected
+        const unseen = await imap.search({ seen: false }, { uid: true });
+        if (unseen) inbox.unread = unseen.length;
+        if (imap.mailbox) inbox.total = imap.mailbox.exists;
+      });
+    } catch (err) {
+      console.warn(`[folders ${id}] couldn't recount the inbox: ${describe(err)}`);
     }
   }
 

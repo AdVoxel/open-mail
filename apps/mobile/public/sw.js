@@ -15,6 +15,8 @@ const REUSE_MS = 5_000;
 
 let inFlight = null;
 let last = null; // { count, at }
+/** A forced check asked for while another was running: run it right after (a Refresh must not get an older answer). */
+let queued = null;
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
@@ -73,7 +75,10 @@ async function setAppBadge(count) {
 async function check(server, fresh, force) {
   if (!server) return;
   if (!force && last && Date.now() - last.at < REUSE_MS) return broadcast({ type: "unread", count: last.count });
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    if (force) queued = { server, fresh: fresh || Boolean(queued?.fresh) };
+    return inFlight;
+  }
   inFlight = (async () => {
     try {
       const count = await countUnread(server, fresh);
@@ -85,6 +90,11 @@ async function check(server, fresh, force) {
       // Server unreachable: keep the last count until the next check.
     } finally {
       inFlight = null;
+      if (queued) {
+        const next = queued;
+        queued = null;
+        void check(next.server, next.fresh, true);
+      }
     }
   })();
   return inFlight;
