@@ -19,7 +19,7 @@
 #   DEPLOY_PREFIX                default: apps/mail
 #   PUBLIC_BASE_URL              where the page loads its files from; default: https://cdn.advoxel.com/<prefix>
 #   APP_BASE_PATH                the path the app is opened at; default: "" (the domain root, mail.advoxel.com)
-#   DIGITALOCEAN_ACCESS_TOKEN    API token, for clearing the CDN cache (doctl); also read as ADVOXEL_DO_TOKEN
+#   DIGITALOCEAN_ACCESS_TOKEN    API token, for clearing the CDN cache (doctl); also read as ADVOXEL_DO_TOKEN or SPACES_DO_TOKEN
 #   DO_CDN_ID                    optional: the CDN endpoint id (found from the Space otherwise);
 #                                also read as SPACES_CDN_ENDPOINT_ID
 set -euo pipefail
@@ -32,7 +32,7 @@ dry="${DRY_RUN:-}"
 # The names this script uses, else the ones already exported for Advoxel (~/.bashrc).
 SPACES_KEY="${SPACES_KEY:-${SPACES_ACCESS_KEY_ID:-}}"
 SPACES_SECRET="${SPACES_SECRET:-${SPACES_SECRET_ACCESS_KEY:-}}"
-DIGITALOCEAN_ACCESS_TOKEN="${DIGITALOCEAN_ACCESS_TOKEN:-${ADVOXEL_DO_TOKEN:-}}"
+DIGITALOCEAN_ACCESS_TOKEN="${DIGITALOCEAN_ACCESS_TOKEN:-${ADVOXEL_DO_TOKEN:-${SPACES_DO_TOKEN:-}}}"
 DO_CDN_ID="${DO_CDN_ID:-${SPACES_CDN_ENDPOINT_ID:-}}"
 export DIGITALOCEAN_ACCESS_TOKEN # doctl reads it from the environment
 bucket="${SPACES_BUCKET:-advoxel}"
