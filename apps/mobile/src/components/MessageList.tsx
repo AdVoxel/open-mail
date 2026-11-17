@@ -12,6 +12,7 @@ import {
   Mail,
   MailOpen,
   Menu,
+  MailDot,
   MessagesSquare,
   Paperclip,
   PenSquare,
@@ -309,17 +310,13 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
       left={!isWide ? <IconButton icon={Menu} label="Mailboxes" onPress={() => router.push("/mailboxes")} /> : undefined}
       right={
         <>
-          <Pressable
+          <IconButton
+            icon={MailDot}
+            label={unreadOnly ? "Showing unread only: show all mail" : "Unread only"}
+            active={unreadOnly}
+            color={unreadOnly ? colors.accent : undefined}
             onPress={() => setUnreadOnly(!unreadOnly)}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: unreadOnly }}
-            accessibilityLabel={unreadOnly ? "Showing unread mail only; show all" : "Show unread mail only"}
-            className={`mr-1 h-7 justify-center rounded-full border px-3 ${unreadOnly ? "border-primary bg-primary" : "border-border data-[hover=true]:bg-accent"}`}
-          >
-            <Text size="xs" className={`font-medium ${unreadOnly ? "text-primary-foreground" : "text-foreground"}`}>
-              Unread
-            </Text>
-          </Pressable>
+          />
           <IconButton
             icon={groupConversations ? MessagesSquare : List}
             label={groupConversations ? "Show single messages" : "Group by conversation"}
