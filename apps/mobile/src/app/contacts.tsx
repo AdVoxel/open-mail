@@ -6,7 +6,7 @@ import type { Contact } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
 import { Text } from "@/components/ui/text";
-import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, Initials, LabeledInput, Loading, RefreshButton, Segmented, useNotify } from "@/src/components/kit";
+import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, Initials, LabeledInput, Loading, RefreshButton, useNotify } from "@/src/components/kit";
 import { useApi } from "@/src/lib/connection";
 import { formatRecipient, useContacts } from "@/src/lib/contacts";
 import { connectGoogle } from "@/src/lib/googleConnect";
@@ -14,8 +14,6 @@ import { formatListDate, useIsWide } from "@/src/lib/format";
 import { loadJson, saveJson } from "@/src/lib/storage";
 import { useMail } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
-
-type Filter = "saved" | "all";
 
 const EMAIL_ONLY_KEY = "contacts.emailOnly";
 
@@ -215,7 +213,8 @@ export default function ContactsScreen() {
     }
   };
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("saved");
+  /** Also list the people Gmail saved on its own because you emailed them ("Other contacts"). */
+  const [showEmailed, setShowEmailed] = useState(false);
   /** Hide contacts without an email address (on by default; remembered). */
   const [emailOnly, setEmailOnlyState] = useState(true);
   useEffect(() => {
@@ -235,11 +234,11 @@ export default function ContactsScreen() {
     const q = query.trim().toLowerCase();
     return (page?.contacts ?? []).filter(
       (c) =>
-        (filter === "all" || !c.auto) &&
+        (showEmailed || !c.auto) &&
         (!emailOnly || c.emails.length > 0) &&
         (!q || `${c.name} ${c.organization} ${c.emails.join(" ")} ${c.phones.join(" ")}`.toLowerCase().includes(q)),
     );
-  }, [page, query, filter, emailOnly]);
+  }, [page, query, showEmailed, emailOnly]);
 
   const toggle = (id: string) =>
     setSelected((current) => {
@@ -328,16 +327,7 @@ export default function ContactsScreen() {
                 className="h-10 flex-1 text-sm text-foreground font-sans web:outline-none"
               />
             </View>
-            {hasAuto ? (
-              <Segmented<Filter>
-                value={filter}
-                onChange={setFilter}
-                options={[
-                  { value: "saved", label: "Saved" },
-                  { value: "all", label: "With emailed" },
-                ]}
-              />
-            ) : null}
+
           </View>
           <View className="flex-row flex-wrap items-center gap-2 pb-3">
             <Pressable onPress={selectAllShown} disabled={!selectableShown.length} className="flex-row items-center gap-2 rounded-md px-1 py-1 data-[hover=true]:bg-accent">
@@ -357,6 +347,20 @@ export default function ContactsScreen() {
                 Only with email
               </Text>
             </Pressable>
+            {hasAuto ? (
+              <Pressable
+                onPress={() => setShowEmailed(!showEmailed)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: showEmailed }}
+                accessibilityHint="Also lists the people Gmail saved on its own because you emailed them"
+                className="flex-row items-center gap-2 rounded-md px-1 py-1 data-[hover=true]:bg-accent"
+              >
+                <CheckBox checked={showEmailed} />
+                <Text size="sm" className="text-muted-foreground">
+                  Show people you've emailed
+                </Text>
+              </Pressable>
+            ) : null}
             <View className="flex-1" />
             {selected.size ? (
               <Button size="sm" variant="ghost" className="rounded-lg" onPress={() => setSelected(new Set())}>
