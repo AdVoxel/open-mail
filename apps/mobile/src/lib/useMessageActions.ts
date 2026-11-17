@@ -9,7 +9,7 @@ export function useMessageActions() {
   const api = useApi();
   const notify = useNotify();
   const confirm = useConfirm();
-  const { folders, updateMessage, removeMessage } = useMail();
+  const { folders, updateMessage, removeMessage, refresh } = useMail();
 
   const roleOf = useCallback(
     (m: MessageHeader) => folders[m.accountId]?.find((f) => f.path === m.folder)?.role ?? null,
@@ -61,6 +61,50 @@ export function useMessageActions() {
     [notify, removeMessage],
   );
 
+  /**
+   * After messages were moved (to Trash or a folder): a notice with Undo, which
+   * moves each back where it was (by its new id there) and reloads the list.
+   */
+  const offerUndo = useCallback(
+    (text: string, moved: { message: Pick<MessageHeader, "accountId" | "folder">; to: string; uid?: number }[]) => {
+      const undoable = moved.filter((m) => m.uid !== undefined);
+      if (!undoable.length) return notify(text);
+      notify(text, undefined, "info", {
+        duration: 8000,
+        action: {
+          label: "Undo",
+          onPress: () => {
+            void Promise.allSettled(undoable.map((m) => api.move(m.message.accountId, m.to, m.uid!, m.message.folder))).then((results) => {
+              const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+              if (failed) notify("Couldn't undo", (failed.reason as Error).message, "error");
+              else notify(undoable.length > 1 ? `${undoable.length} messages put back` : "Put back");
+              void refresh();
+            });
+          },
+        },
+      });
+    },
+    [api, notify, refresh],
+  );
+
+  /** Moves messages to a folder (path), with Undo. Resolves whether any moved. */
+  const moveTo = useCallback(
+    async (messages: MessageHeader[], path: string, folderName: string): Promise<boolean> => {
+      const results = await Promise.allSettled(messages.map((m) => api.move(m.accountId, m.folder, m.uid, path)));
+      const moved: { message: MessageHeader; to: string; uid?: number }[] = [];
+      results.forEach((r, i) => {
+        if (r.status !== "fulfilled") return;
+        removeMessage(messageKey(messages[i]!));
+        moved.push({ message: messages[i]!, to: r.value.destination, uid: r.value.uid });
+      });
+      const error = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (error) notify("Couldn't move", (error.reason as Error).message, "error");
+      else offerUndo(moved.length > 1 ? `${moved.length} messages moved to ${folderName}` : `Moved to ${folderName}`, moved);
+      return moved.length > 0;
+    },
+    [api, notify, offerUndo, removeMessage],
+  );
+
   /** To Trash, or deleted for good (after asking) when already in Trash. Resolves whether anything went. */
   const remove = useCallback(
     async (messages: MessageHeader[]): Promise<boolean> => {
@@ -75,14 +119,20 @@ export function useMessageActions() {
         });
         if (!ok) return false;
       }
-      return removeEach(
-        messages,
-        (m) => api.remove(m.accountId, m.folder, m.uid),
-        inTrash ? "Deleted" : messages.length > 1 ? `${messages.length} messages moved to Trash` : "Moved to Trash",
-        "Couldn't delete",
-      );
+      if (inTrash) return removeEach(messages, (m) => api.remove(m.accountId, m.folder, m.uid), "Deleted", "Couldn't delete");
+      const results = await Promise.allSettled(messages.map((m) => api.remove(m.accountId, m.folder, m.uid)));
+      const moved: { message: MessageHeader; to: string; uid?: number }[] = [];
+      results.forEach((r, i) => {
+        if (r.status !== "fulfilled") return;
+        removeMessage(messageKey(messages[i]!));
+        if (r.value.trash) moved.push({ message: messages[i]!, to: r.value.trash.folder, uid: r.value.trash.uid });
+      });
+      const error = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (error) notify("Couldn't delete", (error.reason as Error).message, "error");
+      else offerUndo(moved.length > 1 ? `${moved.length} messages moved to Trash` : "Moved to Trash", moved);
+      return results.some((r) => r.status === "fulfilled");
     },
-    [api, confirm, removeEach, roleOf],
+    [api, confirm, notify, offerUndo, removeEach, removeMessage, roleOf],
   );
 
   const archive = useCallback(
@@ -96,5 +146,8 @@ export function useMessageActions() {
     [api, removeEach],
   );
 
-  return useMemo(() => ({ setSeen, setLabel, remove, archive, roleOf }), [setSeen, setLabel, remove, archive, roleOf]);
+  return useMemo(
+    () => ({ setSeen, setLabel, remove, archive, moveTo, offerUndo, roleOf }),
+    [setSeen, setLabel, remove, archive, moveTo, offerUndo, roleOf],
+  );
 }

@@ -670,23 +670,39 @@ export class MailService {
    * Move a message. `target` is a folder path, or one of "inbox", "archive",
    * "trash", "junk" to use the account's special-use folder.
    */
-  async moveMessage(id: AccountId, folder: string, uid: number, target: string): Promise<{ destination: string }> {
+  /**
+   * Moves a message. `uid` is its id in the destination (for Undo), when the
+   * server says (UIDPLUS) or it can be found again by its Message-ID.
+   */
+  async moveMessage(id: AccountId, folder: string, uid: number, target: string): Promise<{ destination: string; uid?: number }> {
     const destination = await this.resolveTarget(id, target);
     if (destination === folder) throw new MailError(409, "The message is already in that folder");
-    await this.withFolder(id, folder, async (imap) => {
+    const { newUid, messageId } = await this.withFolder(id, folder, async (imap) => {
+      // Without UIDPLUS the server won't say the new id: remember the Message-ID to look it up after.
+      const messageId = imap.capabilities.has("UIDPLUS")
+        ? undefined
+        : ((await imap.fetchOne(String(uid), { envelope: true }, { uid: true })) || undefined)?.envelope?.messageId;
       const moved = await imap.messageMove(String(uid), destination, { uid: true });
       if (!moved) throw new MailError(404, `Message ${uid} not found in ${folder}`);
+      return { newUid: moved.uidMap?.get(uid), messageId };
     });
     this.folderCache.delete(id);
-    return { destination };
+    if (newUid !== undefined || !messageId) return { destination, uid: newUid };
+    try {
+      const found = await this.withFolder(id, destination, (imap) => imap.search({ header: { "message-id": messageId } }, { uid: true }));
+      return { destination, uid: found && found.length ? Math.max(...found) : undefined };
+    } catch {
+      return { destination };
+    }
   }
 
   /** Move to Trash, or delete permanently when already in Trash (or there is no Trash). */
-  async deleteMessage(id: AccountId, folder: string, uid: number): Promise<{ permanent: boolean }> {
+  async deleteMessage(id: AccountId, folder: string, uid: number): Promise<{ permanent: boolean; trash?: { folder: string; uid?: number } }> {
     const trash = await this.folderForRole(id, ["trash"]);
     if (trash && trash.path !== folder) {
-      await this.moveMessage(id, folder, uid, trash.path);
-      return { permanent: false };
+      const moved = await this.moveMessage(id, folder, uid, trash.path);
+      // Where it went, so the app can offer Undo (move it back).
+      return { permanent: false, trash: { folder: moved.destination, uid: moved.uid } };
     }
     await this.withFolder(id, folder, (imap) => imap.messageDelete(String(uid), { uid: true }));
     this.folderCache.delete(id);

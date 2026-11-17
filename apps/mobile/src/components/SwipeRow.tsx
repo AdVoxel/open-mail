@@ -1,6 +1,7 @@
-import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Animated, Easing, PanResponder, Platform, Pressable as RNPressable, StyleSheet, View } from "react-native";
 import { Mail, MailOpen, Trash2 } from "lucide-react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { Text } from "@/components/ui/text";
 import { useColors } from "@/src/lib/theme";
 
@@ -13,6 +14,28 @@ const DELETE_TRIGGER_MAX = 200;
 /** Release speed (px/ms) that counts as a flick, completing the swipe the way it was going. */
 const FLICK = 0.5;
 const useNativeDriver = Platform.OS !== "web";
+
+/** Each action's color while dragging (the gradient's strong end), and the brighter one once letting go would act. */
+const READ_COLOR = { base: "#2563eb", armed: "#3b82f6" };
+const DELETE_COLOR = { base: "#dc2626", armed: "#ef4444" };
+/** How long the switch to the full, brighter color takes when the threshold is crossed. */
+const ARM_MS = 180;
+
+/** A left-to-right gradient filling its parent: `left` color at the left edge into `right`. */
+function Gradient({ left, right, leftStop = 0, rightStop = 1 }: { left: string; right: string; leftStop?: number; rightStop?: number }) {
+  const id = `g${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  return (
+    <Svg width="100%" height="100%" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
+      <Defs>
+        <LinearGradient id={id} x1="0" y1="0" x2="1" y2="0">
+          <Stop offset={leftStop} stopColor={left} />
+          <Stop offset={rightStop} stopColor={right} />
+        </LinearGradient>
+      </Defs>
+      <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${id})`} />
+    </Svg>
+  );
+}
 
 /** Where a left swipe deletes when let go: half the row, but never further than DELETE_TRIGGER_MAX. */
 function deleteThreshold(width: number): number {
@@ -52,6 +75,23 @@ export function SwipeRow({
   /** The row's width as state too: the delete threshold's highlight depends on it. */
   const [rowWidth, setRowWidth] = useState(0);
   const rest = useRef(0); // 0, or -REVEAL while the Delete button is showing
+  /** Which action letting go would do now (past its threshold), if any. */
+  const [armed, setArmed] = useState<"read" | "delete" | null>(null);
+  const armedRef = useRef<"read" | "delete" | null>(null);
+  const arm = (next: "read" | "delete" | null) => {
+    if (armedRef.current === next) return;
+    armedRef.current = next;
+    setArmed(next);
+  };
+  const armedAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(armedAnim, {
+      toValue: armed ? 1 : 0,
+      duration: armed ? ARM_MS : ARM_MS / 1.5,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver,
+    }).start();
+  }, [armed, armedAnim]);
   const [open, setOpen] = useState(false);
   const swipedAt = useRef(0);
   const justSwiped = useMemo(() => () => Date.now() - swipedAt.current < 400, []);
@@ -65,6 +105,7 @@ export function SwipeRow({
     /** Slides to `to`, carrying on at the speed the finger let go with (px/ms). */
     const settle = (to: number, velocity = 0) => {
       rest.current = to;
+      arm(null);
       setOpen(to !== 0);
       Animated.spring(x, { toValue: to, velocity, useNativeDriver, overshootClamping: true, stiffness: 400, damping: 40, mass: 1 }).start();
     };
@@ -106,8 +147,9 @@ export function SwipeRow({
         onPanResponderGrant: () => x.stopAnimation(),
         onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_e, g) => {
-          const pos = rest.current + g.dx;
-          x.setValue(Math.max(-width.current, Math.min(pos, width.current * 0.4)));
+          const pos = Math.max(-width.current, Math.min(rest.current + g.dx, width.current * 0.4));
+          x.setValue(pos);
+          arm(pos > READ_TRIGGER ? "read" : pos < deleteThreshold(width.current) ? "delete" : null);
         },
         onPanResponderRelease: (_e, g) => finish(g.dx, g.vx),
         // Taken away mid-swipe (the list or the browser claimed the touch): still finish what was meant.
@@ -118,15 +160,14 @@ export function SwipeRow({
 
   const ReadIcon = unread ? MailOpen : Mail;
   const colors = useColors();
-  // Each color only shows while the row is dragged its way, never at rest.
-  // While dragging: a neutral gray. Past the point where letting go acts, the action's color
-  // (blue: read/unread, red: delete), so you see before releasing that it will happen.
-  const dragged = x.interpolate({ inputRange: [-1, 0, 1], outputRange: [1, 0, 1], extrapolate: "clamp" });
-  const readArmed = x.interpolate({ inputRange: [READ_TRIGGER, READ_TRIGGER + 1], outputRange: [0, 1], extrapolate: "clamp" });
-  const deleteAt = deleteThreshold(rowWidth);
-  const deleteArmed = x.interpolate({ inputRange: [deleteAt - 1, deleteAt], outputRange: [1, 0], extrapolate: "clamp" });
+  // Each side only shows while the row is dragged its way, never at rest. While dragging: a
+  // gradient from gray into the action's color; past the point where letting go acts, a quick
+  // fade into the full, brighter color (and the icon grows a little).
   const readSide = x.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: "clamp" });
   const deleteSide = x.interpolate({ inputRange: [-1, 0], outputRange: [1, 0], extrapolate: "clamp" });
+  const readFull = Animated.multiply(readSide, armedAnim);
+  const deleteFull = Animated.multiply(deleteSide, armedAnim);
+  const iconScale = armedAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] });
   const neutral = colors.dark ? "#3f3f46" : "#a1a1aa";
 
   return (
@@ -137,17 +178,24 @@ export function SwipeRow({
       }}
       className="overflow-hidden"
     >
-      {/* Behind the row, all covering the whole row however far it slides: gray while dragging, then the
-          action's color once letting go would act. The Delete button stays red (it can be tapped when shown). */}
+      {/* Behind the row, all covering the whole row however far it slides: a gray-to-color gradient while
+          dragging (the color at the button's edge, so a revealed Delete still reads red), then the full color. */}
       <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: dragged, backgroundColor: neutral }]} />
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: readArmed, backgroundColor: "#2563eb" }]} />
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: deleteArmed, backgroundColor: "#dc2626" }]} />
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: readSide }]}>
+          <Gradient left={READ_COLOR.base} right={neutral} rightStop={0.85} />
+        </Animated.View>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: deleteSide }]}>
+          <Gradient left={neutral} right={DELETE_COLOR.base} leftStop={0.15} />
+        </Animated.View>
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: readFull, backgroundColor: READ_COLOR.armed }]} />
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: deleteFull, backgroundColor: DELETE_COLOR.armed }]} />
         <Animated.View
           pointerEvents="none"
           style={[StyleSheet.absoluteFill, { opacity: readSide, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 20 }]}
         >
-          <ReadIcon size={18} color="#ffffff" />
+          <Animated.View style={{ transform: [{ scale: armed === "read" ? iconScale : 1 }] }}>
+            <ReadIcon size={18} color="#ffffff" />
+          </Animated.View>
           <Text size="sm" className="font-medium text-white">
             {unread ? "Read" : "Unread"}
           </Text>
@@ -160,10 +208,12 @@ export function SwipeRow({
             onPress={responder.remove}
             accessibilityRole="button"
             accessibilityLabel="Delete"
-            style={{ width: REVEAL, backgroundColor: "#dc2626" }}
+            style={{ width: REVEAL }}
             className="h-full items-center justify-center gap-1"
           >
-            <Trash2 size={18} color="#ffffff" />
+            <Animated.View style={{ transform: [{ scale: armed === "delete" ? iconScale : 1 }] }}>
+              <Trash2 size={18} color="#ffffff" />
+            </Animated.View>
             <Text size="xs" className="font-medium text-white">
               Delete
             </Text>

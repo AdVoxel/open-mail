@@ -164,10 +164,10 @@ export function createMailApi(baseUrl: string, token: string) {
     ) =>
       request<{ ok: true }>(msg(id, folder, uid), { method: "PATCH", body: flags }),
     move: (id: AccountId, folder: string, uid: number, to: MoveTarget) =>
-      request<{ destination: string }>(msg(id, folder, uid, "/move"), { method: "POST", body: { to } }),
-    /** Moves to Trash, or deletes for good when already in Trash. */
+      request<{ destination: string; uid?: number }>(msg(id, folder, uid, "/move"), { method: "POST", body: { to } }),
+    /** Moves to Trash (`trash`: where it went, for Undo), or deletes for good when already in Trash. */
     remove: (id: AccountId, folder: string, uid: number) =>
-      request<{ permanent: boolean }>(msg(id, folder, uid), { method: "DELETE" }),
+      request<{ permanent: boolean; trash?: { folder: string; uid?: number } }>(msg(id, folder, uid), { method: "DELETE" }),
 
     // Sending
     send: (id: AccountId, mail: OutgoingMail) =>

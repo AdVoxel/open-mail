@@ -14,6 +14,7 @@ import {
   Menu,
   MailDot,
   MessagesSquare,
+  FolderInput,
   Paperclip,
   PenSquare,
   Search,
@@ -31,6 +32,7 @@ import { ALL_SENT, groupByConversation, useMail, useMailboxTitle, type Conversat
 import { useColors } from "@/src/lib/theme";
 import { useMessageActions } from "@/src/lib/useMessageActions";
 import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading, RefreshButton } from "./kit";
+import { MoveToPanel } from "./MoveToPanel";
 import { OpensPopover } from "./OpensPopover";
 import { SwipeRow, useJustSwiped } from "./SwipeRow";
 import { Tooltip } from "./Tooltip";
@@ -254,9 +256,11 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   // Bulk selection: checkboxes on hover (web) or long press (touch).
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [bulkLabels, setBulkLabels] = useState(false);
+  const [bulkMove, setBulkMove] = useState(false);
   const clearSelection = useCallback(() => {
     setChecked(new Set());
     setBulkLabels(false);
+    setBulkMove(false);
   }, []);
   useEffect(clearSelection, [mailbox, query, groupConversations, clearSelection]);
   const toggleSelect = useCallback(
@@ -297,7 +301,24 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
           {canArchive ? (
             <IconButton icon={Archive} label="Archive" onPress={() => void actions.archive(checkedMessages).then((ok) => ok && clearSelection())} />
           ) : null}
-          <IconButton icon={Tag} label="Labels" active={bulkLabels} onPress={() => setBulkLabels((o) => !o)} />
+          <IconButton
+            icon={FolderInput}
+            label="Move to"
+            active={bulkMove}
+            onPress={() => {
+              setBulkMove((o) => !o);
+              setBulkLabels(false);
+            }}
+          />
+          <IconButton
+            icon={Tag}
+            label="Labels"
+            active={bulkLabels}
+            onPress={() => {
+              setBulkLabels((o) => !o);
+              setBulkMove(false);
+            }}
+          />
           <IconButton icon={Trash2} label="Delete" onPress={() => void actions.remove(checkedMessages).then((ok) => ok && clearSelection())} />
         </>
       }
@@ -330,6 +351,18 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
       }
     />
   );
+
+  // Move to: the checked messages' account (one), and the folder they're in when it's a single folder.
+  const moveAccount = new Set(checkedMessages.map((m) => m.accountId)).size === 1 ? checkedMessages[0]!.accountId : null;
+  const moveFrom = new Set(checkedMessages.map((m) => m.folder)).size === 1 ? checkedMessages[0]?.folder : undefined;
+  const bulkMovePanel =
+    selecting && bulkMove ? (
+      <MoveToPanel
+        accountId={moveAccount}
+        current={moveFrom}
+        onPick={(path, name) => void actions.moveTo(checkedMessages, path, name).then((ok) => ok && clearSelection())}
+      />
+    ) : null;
 
   const bulkLabelPanel =
     selecting && bulkLabels ? (
@@ -451,6 +484,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   return (
     <View className="flex-1 bg-background">
       {header}
+      {bulkMovePanel}
       {bulkLabelPanel}
       {searchBar}
       {body}

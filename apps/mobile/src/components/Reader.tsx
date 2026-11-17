@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Eye,
   FileArchive,
+  FolderInput,
   Forward,
   Inbox,
   Mail,
@@ -34,10 +35,12 @@ import { useApi } from "@/src/lib/connection";
 import { formatFullDate, formatListDate, formatSize } from "@/src/lib/format";
 import { useMail, useSenderColor } from "@/src/lib/mail";
 import { useColors } from "@/src/lib/theme";
+import { useMessageActions } from "@/src/lib/useMessageActions";
 import { AttachmentPreview, canPreview } from "./AttachmentPreview";
 import { saveFile } from "./download";
 import { ErrorBanner, Header, IconButton, Initials, LabelChip, Loading, useConfirm, useNotify } from "./kit";
 import { MessageBody } from "./MessageBody";
+import { MoveToPanel } from "./MoveToPanel";
 import { OpensPopover } from "./OpensPopover";
 
 function AddressLine({ label, list }: { label: string; list: Address[] }) {
@@ -295,6 +298,8 @@ export function Reader({
   const colors = useColors();
   const { updateMessage, removeMessage, folders, groupConversations, labels } = useMail();
   const [labelPicker, setLabelPicker] = useState(false);
+  const [movePicker, setMovePicker] = useState(false);
+  const actions = useMessageActions();
   const [message, setMessage] = useState<MailMessage | null>(null);
   const [thread, setThread] = useState<MessageHeader[] | null>(null);
   // Opens of the conversation's tracked messages, by Message-ID, for the collapsed entries.
@@ -397,19 +402,25 @@ export function Reader({
     void run("mark as unread", () => api.setFlags(accountId, folder, uid, { seen: false }), onClosed);
   };
 
-  const move = (target: "archive" | "inbox", label: string) =>
-    void run(label.toLowerCase(), () => api.move(accountId, folder, uid, target), () => {
-      notify(`${label}d`);
+  /** Moves the message (archive, inbox, or a folder's path), then offers Undo. */
+  const move = (target: string, done: string) => {
+    let result: { destination: string; uid?: number } | undefined;
+    void run("move the message", async () => (result = await api.move(accountId, folder, uid, target)), () => {
+      actions.offerUndo(done, [{ message: { accountId, folder }, to: result!.destination, uid: result!.uid }]);
+      setMovePicker(false);
       removeMessage(key);
       onClosed();
     });
+  };
 
   const remove = async () => {
     if (role === "trash" && !(await confirm({ title: "Delete forever?", message: "This message will be permanently deleted.", confirmLabel: "Delete", destructive: true }))) {
       return;
     }
-    void run("delete", () => api.remove(accountId, folder, uid), () => {
-      notify(role === "trash" ? "Deleted" : "Moved to Trash");
+    let result: Awaited<ReturnType<typeof api.remove>> | undefined;
+    void run("delete", async () => (result = await api.remove(accountId, folder, uid)), () => {
+      if (result?.trash) actions.offerUndo("Moved to Trash", [{ message: { accountId, folder }, to: result.trash.folder, uid: result.trash.uid }]);
+      else notify("Deleted");
       removeMessage(key);
       onClosed();
     });
@@ -432,10 +443,20 @@ export function Reader({
             <IconButton icon={Tag} label="Labels" active={labelPicker} onPress={() => setLabelPicker((o) => !o)} />
             <IconButton icon={message.seen ? Mail : MailOpen} label="Mark as unread" onPress={markUnread} disabled={busy} />
             {role === "inbox" ? (
-              <IconButton icon={Archive} label="Archive" onPress={() => move("archive", "Archive")} disabled={busy} />
+              <IconButton icon={Archive} label="Archive" onPress={() => move("archive", "Archived")} disabled={busy} />
             ) : role === "junk" || role === "trash" || role === "archive" || role === "all" ? (
-              <IconButton icon={Inbox} label="Move to Inbox" onPress={() => move("inbox", "Move")} disabled={busy} />
+              <IconButton icon={Inbox} label="Move to Inbox" onPress={() => move("inbox", "Moved to Inbox")} disabled={busy} />
             ) : null}
+            <IconButton
+              icon={FolderInput}
+              label="Move to"
+              active={movePicker}
+              onPress={() => {
+                setMovePicker((o) => !o);
+                setLabelPicker(false);
+              }}
+              disabled={busy}
+            />
             <IconButton icon={Trash2} label={role === "trash" ? "Delete forever" : "Delete"} onPress={() => void remove()} disabled={busy} />
           </>
         ) : undefined
@@ -466,6 +487,7 @@ export function Reader({
   return (
     <View className="flex-1 bg-background">
       {header}
+      {movePicker ? <MoveToPanel accountId={accountId} current={folder} onPick={(path, name) => move(path, `Moved to ${name}`)} /> : null}
       <ScrollView contentContainerClassName="mx-auto w-full max-w-3xl gap-5 px-5 pb-16 pt-6">
         <View className="gap-1">
           <Text selectable className="text-2xl font-semibold leading-tight tracking-tight">
