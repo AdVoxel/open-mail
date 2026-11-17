@@ -230,6 +230,25 @@ export interface MessageHeader {
 }
 
 /** A message that just arrived in an inbox, as announced to the apps. */
+/** How a sender is blocked: one address, every address of a domain, or a regular expression. */
+export type BlockKind = "address" | "domain" | "regex";
+
+export interface BlockInput {
+  kind: BlockKind;
+  /** The address, the domain (example.com), or the regular expression. */
+  value: string;
+}
+
+/** A blocked sender: their new mail goes to the account's spam folder on its own. */
+export interface BlockRule extends BlockInput {
+  id: string;
+  /** Case-insensitive regular expression tested on the sender's address and on "Name <address>". */
+  pattern: string;
+  createdAt: string;
+  /** Messages moved to spam by this rule. */
+  hits: number;
+}
+
 export interface NewMail {
   message: MessageHeader;
   /** The start of the text, for a notification. */

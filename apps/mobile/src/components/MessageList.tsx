@@ -15,6 +15,7 @@ import {
   MailDot,
   MessagesSquare,
   FolderInput,
+  ShieldBan,
   Paperclip,
   PenSquare,
   Search,
@@ -33,6 +34,7 @@ import { useColors } from "@/src/lib/theme";
 import { useMessageActions } from "@/src/lib/useMessageActions";
 import { ColorDot, EmptyState, ErrorBanner, Header, IconButton, LabelChip, Loading, RefreshButton } from "./kit";
 import { MoveToPanel } from "./MoveToPanel";
+import { SpamPanel } from "./SpamPanel";
 import { OpensPopover } from "./OpensPopover";
 import { SwipeRow, useJustSwiped } from "./SwipeRow";
 import { Tooltip } from "./Tooltip";
@@ -191,6 +193,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   const {
     list,
     refresh,
+    refreshAll,
     loadMore,
     hasMore,
     mailbox,
@@ -257,10 +260,12 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [bulkLabels, setBulkLabels] = useState(false);
   const [bulkMove, setBulkMove] = useState(false);
+  const [bulkSpam, setBulkSpam] = useState(false);
   const clearSelection = useCallback(() => {
     setChecked(new Set());
     setBulkLabels(false);
     setBulkMove(false);
+    setBulkSpam(false);
   }, []);
   useEffect(clearSelection, [mailbox, query, groupConversations, clearSelection]);
   const toggleSelect = useCallback(
@@ -308,6 +313,17 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
             onPress={() => {
               setBulkMove((o) => !o);
               setBulkLabels(false);
+              setBulkSpam(false);
+            }}
+          />
+          <IconButton
+            icon={ShieldBan}
+            label="Spam"
+            active={bulkSpam}
+            onPress={() => {
+              setBulkSpam((o) => !o);
+              setBulkMove(false);
+              setBulkLabels(false);
             }}
           />
           <IconButton
@@ -317,6 +333,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
             onPress={() => {
               setBulkLabels((o) => !o);
               setBulkMove(false);
+              setBulkSpam(false);
             }}
           />
           <IconButton icon={Trash2} label="Delete" onPress={() => void actions.remove(checkedMessages).then((ok) => ok && clearSelection())} />
@@ -345,7 +362,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
             onPress={() => setGroupConversations(!groupConversations)}
           />
           <IconButton icon={Search} label="Search" active={searching} onPress={() => setSearching((s) => !s)} />
-          <RefreshButton onPress={refresh} busy={list.loading} />
+          <RefreshButton onPress={refreshAll} busy={list.loading} />
           {!isWide ? <IconButton icon={PenSquare} label="New message" onPress={() => router.push("/compose")} /> : null}
         </>
       }
@@ -362,6 +379,11 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
         current={moveFrom}
         onPick={(path, name) => void actions.moveTo(checkedMessages, path, name).then((ok) => ok && clearSelection())}
       />
+    ) : null;
+
+  const bulkSpamPanel =
+    selecting && bulkSpam ? (
+      <SpamPanel messages={checkedMessages} onReport={(choice) => void actions.reportSpam(checkedMessages, choice).then((ok) => ok && clearSelection())} />
     ) : null;
 
   const bulkLabelPanel =
@@ -447,7 +469,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
             />
           </SwipeRow>
         )}
-        refreshControl={<RefreshControl refreshing={list.loading && list.messages.length > 0} onRefresh={() => void refresh()} />}
+        refreshControl={<RefreshControl refreshing={list.loading && list.messages.length > 0} onRefresh={() => void refreshAll()} />}
         onEndReached={loadMore}
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
@@ -485,6 +507,7 @@ export function MessageList({ onOpen, isWide }: { onOpen: (m: MessageHeader) => 
     <View className="flex-1 bg-background">
       {header}
       {bulkMovePanel}
+      {bulkSpamPanel}
       {bulkLabelPanel}
       {searchBar}
       {body}

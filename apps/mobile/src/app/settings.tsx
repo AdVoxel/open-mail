@@ -9,6 +9,8 @@ import {
   type AccountInput,
   type HostConfig,
   type MailLabel,
+  type BlockKind,
+  type BlockRule,
 } from "@mail-app/api-client";
 import { Button, ButtonText } from "@/components/ui/button";
 import { Pressable } from "@/components/ui/pressable";
@@ -725,6 +727,109 @@ function LabelsSection() {
   );
 }
 
+// ------------------------------------------------------------ blocked senders
+
+const BLOCK_KINDS = [
+  { value: "address", label: "Address" },
+  { value: "domain", label: "Domain" },
+  { value: "regex", label: "Regex" },
+] as const;
+
+/** Rules whose senders' new mail goes to spam on its own: list, add, remove. */
+function BlockedSendersSection() {
+  const api = useApi();
+  const notify = useNotify();
+  const colors = useColors();
+  const [rules, setRules] = useState<BlockRule[] | null>(null);
+  const [kind, setKind] = useState<BlockKind>("address");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setRules(await api.blocklist());
+    } catch {
+      setRules([]); // older servers: no blocking
+    }
+  };
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api]);
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      await api.addBlock({ kind, value: value.trim() });
+      setValue("");
+      await load();
+      notify("Sender blocked", "New mail from it goes to spam.");
+    } catch (e) {
+      notify("Couldn't block", (e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (rule: BlockRule) => {
+    try {
+      await api.removeBlock(rule.id);
+      await load();
+      notify("Unblocked", rule.value);
+    } catch (e) {
+      notify("Couldn't unblock", (e as Error).message, "error");
+    }
+  };
+  const describeRule = (r: BlockRule) => (r.kind === "address" ? r.value : r.kind === "domain" ? `Everyone at @${r.value.replace(/^.*@/, "")}` : `/${r.value}/`);
+
+  return (
+    <Card>
+      <View className="gap-3 p-4">
+        <Text size="xs" className="text-muted-foreground">
+          New mail from these senders goes to the account's spam folder on its own, without a notification. Add them here or with the Spam button on a message.
+        </Text>
+        {rules === null ? null : rules.length ? (
+          <View>
+            {rules.map((r, i) => (
+              <View key={r.id} className={`flex-row items-center gap-3 py-2 ${i < rules.length - 1 ? "border-b border-border/70" : ""}`}>
+                <View className="min-w-0 flex-1">
+                  <Text size="sm" numberOfLines={1} className={r.kind === "regex" ? "font-mono" : ""}>
+                    {describeRule(r)}
+                  </Text>
+                  <Text size="xs" className="text-muted-foreground">
+                    {r.kind === "address" ? "Address" : r.kind === "domain" ? "Domain" : "Regular expression"}
+                    {r.hits ? ` · ${r.hits} sent to spam` : ""}
+                  </Text>
+                </View>
+                <IconButton icon={Trash2} label="Unblock" onPress={() => void remove(r)} />
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text size="sm" className="text-muted-foreground">
+            No blocked senders.
+          </Text>
+        )}
+        <View className="flex-row flex-wrap items-center gap-2">
+          <Segmented<BlockKind> value={kind} onChange={setKind} options={BLOCK_KINDS.map((k) => ({ value: k.value, label: k.label }))} />
+          <TextInput
+            value={value}
+            onChangeText={setValue}
+            onSubmitEditing={() => value.trim() && void add()}
+            placeholder={kind === "address" ? "spam@example.com" : kind === "domain" ? "example.com" : "@(promo|deals)\\.example\\.com$"}
+            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            className={`h-9 min-w-[200px] flex-1 rounded-lg border border-border bg-background px-3 text-sm text-foreground web:outline-none ${kind === "regex" ? "font-mono" : "font-sans"}`}
+          />
+          <Button size="sm" className="rounded-lg" disabled={busy || !value.trim()} onPress={() => void add()}>
+            <ButtonText>Block</ButtonText>
+          </Button>
+        </View>
+      </View>
+    </Card>
+  );
+}
+
 // ------------------------------------------------------------ appearance
 
 function AccentPicker() {
@@ -912,6 +1017,8 @@ export default function SettingsScreen() {
         <SectionTitle>Labels</SectionTitle>
         <LabelsSection />
 
+        <SectionTitle>Blocked senders</SectionTitle>
+        <BlockedSendersSection />
         <SectionTitle>Appearance</SectionTitle>
         <Card className="gap-4 p-4">
           <View className="items-start">

@@ -696,6 +696,14 @@ export class MailService {
     }
   }
 
+  /** To the account's spam folder (Junk / [Gmail]/Spam). */
+  async moveToSpam(id: AccountId, folder: string, uid: number): Promise<{ destination: string; uid?: number }> {
+    const junk = await this.folderForRole(id, ["junk"]);
+    if (!junk) throw new MailError(409, "This account has no spam folder");
+    if (junk.path === folder) throw new MailError(409, "The message is already in the spam folder");
+    return this.moveMessage(id, folder, uid, junk.path);
+  }
+
   /** Move to Trash, or delete permanently when already in Trash (or there is no Trash). */
   async deleteMessage(id: AccountId, folder: string, uid: number): Promise<{ permanent: boolean; trash?: { folder: string; uid?: number } }> {
     const trash = await this.folderForRole(id, ["trash"]);

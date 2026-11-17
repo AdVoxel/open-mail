@@ -37,6 +37,10 @@ interface MailState {
   setQuery: (query: string) => void;
   list: ListState;
   refresh: () => Promise<void>;
+  /** The Refresh button: the list, every account's folder counts, and the unread badge, all asked fresh. */
+  refreshAll: () => Promise<void>;
+  /** Goes up on each refreshAll, so the badge can count again. */
+  refreshTick: number;
   loadMore: () => void;
   hasMore: boolean;
   updateMessage: (key: string, patch: Partial<MessageHeader>) => void;
@@ -83,6 +87,7 @@ export function MailProvider({ children }: { children: ReactNode }) {
   const [labels, setLabels] = useState<MailLabel[]>([]);
   const requestId = useRef(0);
   const loaded = useRef(0); // how many messages are currently loaded, for refresh
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const reloadAccounts = useCallback(async () => {
     // Servers from before account colors and signatures don't send those fields.
@@ -161,6 +166,11 @@ export function MailProvider({ children }: { children: ReactNode }) {
     }
     if (mailbox.accountId) void loadFolders(mailbox.accountId, true);
   }, [fetchPage, loadFolders, mailbox.accountId]);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshTick((t) => t + 1);
+    await Promise.all([refresh(), ...accounts.map((a) => loadFolders(a.id, true))]);
+  }, [refresh, accounts, loadFolders]);
 
   // New mailbox or search: start from an empty list.
   useEffect(() => {
@@ -253,6 +263,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       setQuery,
       list,
       refresh,
+      refreshAll,
+      refreshTick,
       loadMore,
       hasMore,
       updateMessage,
@@ -279,6 +291,8 @@ export function MailProvider({ children }: { children: ReactNode }) {
       query,
       list,
       refresh,
+      refreshAll,
+      refreshTick,
       loadMore,
       hasMore,
       updateMessage,

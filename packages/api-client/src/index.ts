@@ -7,6 +7,8 @@ import type {
   AccountInput,
   AccountUpdate,
   Address,
+  BlockInput,
+  BlockRule,
   CalendarEvent,
   CalendarPage,
   Contact,
@@ -165,6 +167,9 @@ export function createMailApi(baseUrl: string, token: string) {
       request<{ ok: true }>(msg(id, folder, uid), { method: "PATCH", body: flags }),
     move: (id: AccountId, folder: string, uid: number, to: MoveTarget) =>
       request<{ destination: string; uid?: number }>(msg(id, folder, uid, "/move"), { method: "POST", body: { to } }),
+    /** To the account's spam folder; `block` also blocks the sender from then on. */
+    reportSpam: (id: AccountId, folder: string, uid: number, block?: BlockInput) =>
+      request<{ destination: string; uid?: number; rule?: BlockRule }>(msg(id, folder, uid, "/spam"), { method: "POST", body: { block } }),
     /** Moves to Trash (`trash`: where it went, for Undo), or deletes for good when already in Trash. */
     remove: (id: AccountId, folder: string, uid: number) =>
       request<{ permanent: boolean; trash?: { folder: string; uid?: number } }>(msg(id, folder, uid), { method: "DELETE" }),
@@ -242,6 +247,11 @@ export function createMailApi(baseUrl: string, token: string) {
       request<{ ok: true }>("/calendar/events/respond", { method: "POST", body: { ...target, response } }),
     deleteEvent: (target: EventTarget & { eventId: string }) =>
       request<{ ok: true }>(`/calendar/events?${new URLSearchParams({ ...target })}`, { method: "DELETE" }),
+
+    // Blocked senders (their new mail goes to spam)
+    blocklist: () => request<BlockRule[]>("/blocklist"),
+    addBlock: (input: BlockInput) => request<BlockRule>("/blocklist", { method: "POST", body: input }),
+    removeBlock: (bid: string) => request<{ ok: true }>(`/blocklist/${encodeURIComponent(bid)}`, { method: "DELETE" }),
 
     // Contacts: imported by the server from iCloud and Google (older servers have none: 404)
     contacts: () => request<ContactsPage>("/contacts"),

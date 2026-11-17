@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   aesCipher,
+  BlockList,
   CalendarService,
   checkGoogleClient,
   ContactService,
@@ -51,6 +52,16 @@ const contacts = new ContactService(join(dataDir, "contacts.json"), mail, store,
 const reminders = new EventReminders(calendars);
 const scheduler = new Scheduler(join(dataDir, "scheduled.json"), mail);
 const watcher = new NewMailWatcher(mail);
+const blocklist = new BlockList(join(dataDir, "blocklist.json"));
+// New mail from a blocked sender goes to the account's spam folder, without a notification.
+watcher.screen = async ({ message }) => {
+  const rule = blocklist.match(message.from);
+  if (!rule) return false;
+  await mail.moveToSpam(message.accountId, message.folder, message.uid);
+  blocklist.hit(rule.id);
+  console.log(`[blocklist] moved mail from ${message.from.address} to spam (rule ${rule.value})`);
+  return true;
+};
 
 const server = startServer({
   port: Number(process.env.MAIL_APP_PORT) || 8787,
@@ -59,6 +70,7 @@ const server = startServer({
   mail,
   scheduler,
   labels: new LabelStore(join(dataDir, "labels.json")),
+  blocklist,
   watcher,
   reminders,
   calendars,

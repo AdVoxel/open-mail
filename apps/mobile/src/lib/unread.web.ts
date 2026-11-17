@@ -116,7 +116,7 @@ function showBadge(count: number, color: string) {
 export function useUnreadBadge(): void {
   const api = useApi();
   const { connection } = useConnection();
-  const { accounts, checkInterval, list } = useMail();
+  const { accounts, checkInterval, list, refreshTick } = useMail();
   const { accent } = useThemeMode();
   const [count, setCount] = useState(0);
   const accountIds = accounts.map((a) => a.id).join("\n");
@@ -159,6 +159,11 @@ export function useUnreadBadge(): void {
     const timer = setTimeout(() => void check({ fresh: false, force: true }), 1_500);
     return () => clearTimeout(timer);
   }, [check, loadedUnread, list.total]);
+
+  // The Refresh button: count again now, asking the server for fresh numbers.
+  useEffect(() => {
+    if (refreshTick) void check({ fresh: true, force: true });
+  }, [check, refreshTick]);
 
   // Installed app on Chrome: also check while no tab is open, as often as the browser allows.
   useEffect(() => {

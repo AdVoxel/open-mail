@@ -5,6 +5,7 @@ import {
   describe,
   MailError,
   type AccountInfo,
+  type BlockList,
   type CalendarService,
   type ContactService,
   type EventReminder,
@@ -26,6 +27,7 @@ export interface ServerOptions {
   mail: MailService;
   scheduler: Scheduler;
   labels: LabelStore;
+  blocklist: BlockList;
   watcher: NewMailWatcher;
   reminders: EventReminders;
   calendars: CalendarService;
@@ -142,6 +144,12 @@ const ScheduleUpdateSchema = MailSchema.partial().extend({
   sendAt: z.iso.datetime({ offset: true }).optional(),
 });
 
+const BlockInputSchema = z.object({
+  kind: z.enum(["address", "domain", "regex"]),
+  value: z.string().trim().min(1).max(300),
+});
+const SpamSchema = z.object({ block: BlockInputSchema.optional() });
+
 const LabelIdSchema = z.string().regex(/^[0-9a-f]{8}$/, "Unknown label id");
 
 const FlagsSchema = z.object({
@@ -225,6 +233,7 @@ export function startServer({
   mail,
   scheduler,
   labels,
+  blocklist,
   watcher,
   reminders,
   calendars,
@@ -418,6 +427,17 @@ export function startServer({
         return mail.moveMessage(requireAccount(params), folderParam(url), uidParam(params), to);
       },
     ],
+    // Spam: to the account's spam folder, optionally blocking the sender from then on.
+    [
+      "POST",
+      "/api/accounts/:id/messages/:uid/spam",
+      async (req, params, url) => {
+        const { block } = parse(SpamSchema, await readJson(req));
+        const rule = block ? blocklist.add(block) : undefined; // first: a bad regex refuses before anything moves
+        const moved = await mail.moveToSpam(requireAccount(params), folderParam(url), uidParam(params));
+        return { ...moved, rule };
+      },
+    ],
     [
       "DELETE",
       "/api/accounts/:id/messages/:uid",
@@ -500,6 +520,18 @@ export function startServer({
       async (req) => {
         const { code, password } = parse(ResetConfirmSchema, await readJson(req));
         lock.confirmReset(code, password);
+        return { ok: true };
+      },
+    ],
+
+    // Blocked senders
+    ["GET", "/api/blocklist", () => blocklist.list()],
+    ["POST", "/api/blocklist", async (req) => blocklist.add(parse(BlockInputSchema, await readJson(req)))],
+    [
+      "DELETE",
+      "/api/blocklist/:bid",
+      (_req, params) => {
+        blocklist.remove(params.bid!);
         return { ok: true };
       },
     ],

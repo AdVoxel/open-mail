@@ -7,6 +7,7 @@ import {
   Eye,
   FileArchive,
   FolderInput,
+  ShieldBan,
   Forward,
   Inbox,
   Mail,
@@ -41,6 +42,7 @@ import { saveFile } from "./download";
 import { ErrorBanner, Header, IconButton, Initials, LabelChip, Loading, useConfirm, useNotify } from "./kit";
 import { MessageBody } from "./MessageBody";
 import { MoveToPanel } from "./MoveToPanel";
+import { SpamPanel } from "./SpamPanel";
 import { OpensPopover } from "./OpensPopover";
 
 function AddressLine({ label, list }: { label: string; list: Address[] }) {
@@ -299,6 +301,7 @@ export function Reader({
   const { updateMessage, removeMessage, folders, groupConversations, labels } = useMail();
   const [labelPicker, setLabelPicker] = useState(false);
   const [movePicker, setMovePicker] = useState(false);
+  const [spamPicker, setSpamPicker] = useState(false);
   const actions = useMessageActions();
   const [message, setMessage] = useState<MailMessage | null>(null);
   const [thread, setThread] = useState<MessageHeader[] | null>(null);
@@ -453,10 +456,24 @@ export function Reader({
               active={movePicker}
               onPress={() => {
                 setMovePicker((o) => !o);
+                setSpamPicker(false);
                 setLabelPicker(false);
               }}
               disabled={busy}
             />
+            {role !== "junk" ? (
+              <IconButton
+                icon={ShieldBan}
+                label="Spam"
+                active={spamPicker}
+                onPress={() => {
+                  setSpamPicker((o) => !o);
+                  setMovePicker(false);
+                  setLabelPicker(false);
+                }}
+                disabled={busy}
+              />
+            ) : null}
             <IconButton icon={Trash2} label={role === "trash" ? "Delete forever" : "Delete"} onPress={() => void remove()} disabled={busy} />
           </>
         ) : undefined
@@ -487,6 +504,18 @@ export function Reader({
   return (
     <View className="flex-1 bg-background">
       {header}
+      {spamPicker ? (
+        <SpamPanel
+          messages={[message]}
+          onReport={(choice) =>
+            void actions.reportSpam([message], choice).then((ok) => {
+              if (!ok) return;
+              setSpamPicker(false);
+              onClosed();
+            })
+          }
+        />
+      ) : null}
       {movePicker ? <MoveToPanel accountId={accountId} current={folder} onPick={(path, name) => move(path, `Moved to ${name}`)} /> : null}
       <ScrollView contentContainerClassName="mx-auto w-full max-w-3xl gap-5 px-5 pb-16 pt-6">
         <View className="gap-1">

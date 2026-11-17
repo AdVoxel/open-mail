@@ -7,8 +7,13 @@ import type { AccountId, NewMail } from "./types.js";
 /** Mail older than this when first seen (e.g. moved back into the inbox) isn't announced. */
 const MAX_AGE_MS = 24 * 60 * 60_000;
 
+/** Looks at a newly arrived message first; true when it dealt with it (e.g. moved a blocked sender's mail to spam). */
+export type MailScreen = (mail: NewMail) => Promise<boolean>;
+
 export class NewMailWatcher extends EventEmitter<{ mail: [NewMail] }> {
   private seen = new Map<AccountId, { uidValidity: string; uid: number }>();
+  /** Runs on every new message before it's announced. */
+  screen?: MailScreen;
   private timer?: NodeJS.Timeout;
   private running = false;
 
@@ -40,6 +45,11 @@ export class NewMailWatcher extends EventEmitter<{ mail: [NewMail] }> {
           const { arrived, ...state } = await this.mail.inboxSince(account.id, this.seen.get(account.id));
           this.seen.set(account.id, state);
           for (const mail of arrived) {
+            try {
+              if (this.screen && (await this.screen(mail))) continue; // handled: not announced
+            } catch (err) {
+              console.warn(`[new mail ${account.address}] screening failed: ${describe(err)}`);
+            }
             if (mail.message.seen || Date.now() - Date.parse(mail.message.date) > MAX_AGE_MS) continue;
             this.emit("mail", mail);
           }

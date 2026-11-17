@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { messageKey, type MessageHeader } from "@mail-app/api-client";
 import { useConfirm, useNotify } from "@/src/components/kit";
+import { blocksFor, type SpamBlock } from "@/src/components/SpamPanel";
 import { useApi } from "./connection";
 import { useMail } from "./mail";
 
@@ -66,7 +67,7 @@ export function useMessageActions() {
    * moves each back where it was (by its new id there) and reloads the list.
    */
   const offerUndo = useCallback(
-    (text: string, moved: { message: Pick<MessageHeader, "accountId" | "folder">; to: string; uid?: number }[]) => {
+    (text: string, moved: { message: Pick<MessageHeader, "accountId" | "folder">; to: string; uid?: number }[], undoAlso?: () => Promise<unknown>) => {
       const undoable = moved.filter((m) => m.uid !== undefined);
       if (!undoable.length) return notify(text);
       notify(text, undefined, "info", {
@@ -74,7 +75,7 @@ export function useMessageActions() {
         action: {
           label: "Undo",
           onPress: () => {
-            void Promise.allSettled(undoable.map((m) => api.move(m.message.accountId, m.to, m.uid!, m.message.folder))).then((results) => {
+            void Promise.allSettled([...undoable.map((m) => api.move(m.message.accountId, m.to, m.uid!, m.message.folder)), ...(undoAlso ? [undoAlso()] : [])]).then((results) => {
               const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
               if (failed) notify("Couldn't undo", (failed.reason as Error).message, "error");
               else notify(undoable.length > 1 ? `${undoable.length} messages put back` : "Put back");
@@ -100,6 +101,42 @@ export function useMessageActions() {
       const error = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
       if (error) notify("Couldn't move", (error.reason as Error).message, "error");
       else offerUndo(moved.length > 1 ? `${moved.length} messages moved to ${folderName}` : `Moved to ${folderName}`, moved);
+      return moved.length > 0;
+    },
+    [api, notify, offerUndo, removeMessage],
+  );
+
+  /**
+   * Report spam: to each account's spam folder, blocking per `choice`. Undo
+   * moves them back and removes the block rules this added.
+   */
+  const reportSpam = useCallback(
+    async (messages: MessageHeader[], choice: SpamBlock): Promise<boolean> => {
+      if (!messages.length) return false;
+      const started = Date.now();
+      const blocks = blocksFor(choice, messages);
+      // Each block once: with the first message of its sender (or the first message, for a domain list or regex).
+      const blockFor = (m: MessageHeader, i: number) =>
+        choice.kind === "sender" ? blocks.find((b) => b.value === m.from.address.trim().toLowerCase() && messages.findIndex((x) => x.from.address.trim().toLowerCase() === b.value) === i) : undefined;
+      const results = await Promise.allSettled(messages.map((m, i) => api.reportSpam(m.accountId, m.folder, m.uid, blockFor(m, i))));
+      // Domain and regex rules: added once, apart.
+      const extra = choice.kind === "domain" || choice.kind === "regex" ? await Promise.allSettled(blocks.map((b) => api.addBlock(b))) : [];
+      const added = [
+        ...results.flatMap((r) => (r.status === "fulfilled" && r.value.rule ? [r.value.rule] : [])),
+        ...extra.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])),
+      ].filter((rule) => Date.parse(rule.createdAt) >= started - 5000); // new ones only: Undo leaves older rules alone
+      const moved: { message: MessageHeader; to: string; uid?: number }[] = [];
+      results.forEach((r, i) => {
+        if (r.status !== "fulfilled") return;
+        removeMessage(messageKey(messages[i]!));
+        moved.push({ message: messages[i]!, to: r.value.destination, uid: r.value.uid });
+      });
+      const error = [...results, ...extra].find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (error) notify("Couldn't report spam", (error.reason as Error).message, "error");
+      else {
+        const blocked = choice.kind === "none" ? "" : added.length ? ` · ${added.length === 1 ? "sender blocked" : `${added.length} rules added`}` : "";
+        offerUndo(`${moved.length > 1 ? `${moved.length} messages moved` : "Moved"} to spam${blocked}`, moved, () => Promise.all(added.map((rule) => api.removeBlock(rule.id))));
+      }
       return moved.length > 0;
     },
     [api, notify, offerUndo, removeMessage],
@@ -147,7 +184,7 @@ export function useMessageActions() {
   );
 
   return useMemo(
-    () => ({ setSeen, setLabel, remove, archive, moveTo, offerUndo, roleOf }),
-    [setSeen, setLabel, remove, archive, moveTo, offerUndo, roleOf],
+    () => ({ setSeen, setLabel, remove, archive, moveTo, reportSpam, offerUndo, roleOf }),
+    [setSeen, setLabel, remove, archive, moveTo, reportSpam, offerUndo, roleOf],
   );
 }
