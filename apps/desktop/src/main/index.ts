@@ -1,6 +1,6 @@
 // Desktop shell: a native window around the shared Expo/gluestack UI.
 // The UI talks to the mail server over HTTP; no mail code runs here.
-import { app, BrowserWindow, net, protocol, shell } from "electron";
+import { app, BrowserWindow, ipcMain, net, Notification, protocol, shell } from "electron";
 import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 // Dev: the Expo web dev server (npm run web). Packaged: the exported build in out/web.
 const devUrl = process.env.MAIL_UI_URL ?? (app.isPackaged ? undefined : "http://localhost:8081");
 const webRoot = join(import.meta.dirname, "../web");
+const activeNotifications = new Map<string, Notification>();
 
 // A standard scheme gives the UI a stable origin, so its saved settings persist.
 // Not "secure": the UI must be able to call an http:// server on your network.
@@ -22,6 +23,23 @@ function serveExportedUi(): void {
     // Unknown paths are app routes (single-page app): serve index.html.
     const target = file.startsWith(webRoot) && extname(file) && existsSync(file) ? file : join(webRoot, "index.html");
     return net.fetch(pathToFileURL(target).toString());
+  });
+}
+
+function registerNotificationIpc(): void {
+  ipcMain.handle("mail:notifications-supported", () => Notification.isSupported());
+  ipcMain.on("mail:show-notification", (event, request: { title: string; body: string; tag: string }) => {
+    if (!BrowserWindow.fromWebContents(event.sender) || !Notification.isSupported()) return;
+    activeNotifications.get(request.tag)?.close();
+    const notification = new Notification({ title: request.title, body: request.body, id: request.tag });
+    activeNotifications.set(request.tag, notification);
+    notification.on("click", () => {
+      if (!event.sender.isDestroyed()) event.sender.send("mail:notification-click", request.tag);
+    });
+    notification.on("close", () => {
+      if (activeNotifications.get(request.tag) === notification) activeNotifications.delete(request.tag);
+    });
+    notification.show();
   });
 }
 
@@ -44,8 +62,15 @@ async function createWindow(): Promise<void> {
     minHeight: 520,
     title: "Mail",
     backgroundColor: "#ffffff",
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: join(import.meta.dirname, "../preload/index.mjs"),
+    },
   });
+
+  win.webContents.on("destroyed", () => activeNotifications.clear());
 
   // Links in emails open in the default browser, never inside the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -65,12 +90,14 @@ async function createWindow(): Promise<void> {
   } else {
     await win.loadURL("app://mail/");
   }
+
 }
 
 // Windows shows notifications only for an app with an id (the same as the installer's appId).
 app.setAppUserModelId("com.openmail.desktop");
 
 app.whenReady().then(() => {
+  registerNotificationIpc();
   if (!devUrl) serveExportedUi();
   void createWindow();
   app.on("activate", () => {

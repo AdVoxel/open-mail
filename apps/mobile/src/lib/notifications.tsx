@@ -29,8 +29,20 @@ function openEvent(event: CalendarEvent) {
   router.push({ pathname: "/event", params: { key } });
 }
 
-/** Browser and desktop app (Electron) for now; phones come later. */
-export const notificationsSupported = Platform.OS === "web" && typeof window !== "undefined" && "Notification" in window;
+declare global {
+  interface Window {
+    mailDesktopNotifications?: {
+      isSupported: () => Promise<boolean>;
+      show: (title: string, body: string, tag: string) => void;
+      onClick: (callback: (tag: string) => void) => () => void;
+    };
+  }
+}
+
+/** Browser notifications on web, native Electron notifications on desktop. */
+const browserNotificationsSupported = Platform.OS === "web" && typeof window !== "undefined" && "Notification" in window;
+export const notificationsSupported = Platform.OS === "web" && typeof window !== "undefined" &&
+  (browserNotificationsSupported || Boolean(window.mailDesktopNotifications));
 
 export type NotificationPermissionState = NotificationPermission | "unsupported";
 
@@ -50,7 +62,24 @@ interface NotificationsState {
 
 const Context = createContext<NotificationsState | null>(null);
 
+const desktopClickHandlers = new Map<string, () => void>();
+let removeDesktopClickListener: (() => void) | undefined;
+
 function show(title: string, body: string, tag: string, onClick?: () => void) {
+  const desktop = window.mailDesktopNotifications;
+  if (desktop) {
+    if (onClick) {
+      desktopClickHandlers.set(tag, onClick);
+      removeDesktopClickListener ??= desktop.onClick((clickedTag) => {
+        window.focus();
+        const callback = desktopClickHandlers.get(clickedTag);
+        desktopClickHandlers.delete(clickedTag);
+        callback?.();
+      });
+    }
+    desktop.show(title, body, tag);
+    return;
+  }
   const notification = new Notification(title, { body, tag });
   notification.onclick = () => {
     window.focus();
@@ -71,7 +100,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [eventAlerts, setEventAlertsState] = useState(true);
   const [enabled, setEnabledState] = useState(false);
   const [permission, setPermission] = useState<NotificationPermissionState>(
-    notificationsSupported ? Notification.permission : "unsupported",
+    browserNotificationsSupported ? Notification.permission : notificationsSupported ? "granted" : "unsupported",
   );
 
   useEffect(() => {
@@ -92,7 +121,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (inboxShown) {
         void refresh();
       }
-      if (!enabled || Notification.permission !== "granted") return;
+      if (!enabled || (!window.mailDesktopNotifications && Notification.permission !== "granted")) return;
       // While locked, nothing about the message shows outside the app.
       if (locked) return show("New mail", "Unlock Mail to read it.", "mail-locked");
       const from = displayName(message.from);
@@ -105,7 +134,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       if (!eventAlerts) return;
       const details = [untilStart(event), formatEventTime(event), event.location].filter(Boolean).join(" · ");
       if (!locked) notify(event.title, details, "info", { duration: 15_000, action: { label: "Open", onPress: () => openEvent(event) } });
-      if (!enabled || Notification.permission !== "granted") return;
+      if (!enabled || (!window.mailDesktopNotifications && Notification.permission !== "granted")) return;
       if (locked) return show("Calendar alert", "Unlock Mail to see it.", "event-locked");
       show(event.title, details, `event:${eventKey(event)}`, () => openEvent(event));
     };
@@ -126,6 +155,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
 
   const setEnabled = useCallback(async (on: boolean): Promise<NotificationPermissionState> => {
     if (!notificationsSupported) return "unsupported";
+    if (window.mailDesktopNotifications) {
+      const current = await window.mailDesktopNotifications.isSupported() ? "granted" : "denied";
+      setPermission(current);
+      const next = on && current === "granted";
+      setEnabledState(next);
+      void saveJson(STORAGE_KEY, next);
+      return current;
+    }
     let current = Notification.permission;
     if (on && current === "default") current = await Notification.requestPermission();
     setPermission(current);
@@ -136,7 +173,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const test = useCallback(() => {
-    if (notificationsSupported && Notification.permission === "granted") {
+    if (typeof window !== "undefined" && (window.mailDesktopNotifications || (browserNotificationsSupported && Notification.permission === "granted"))) {
       show("Notifications are on", "New mail will show up like this.", "mail-test");
     }
   }, []);

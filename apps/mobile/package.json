@@ -44,7 +44,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "export:web": "expo export --platform web --output-dir ../desktop/out/web",
+    "export:web": "expo export --platform web --output-dir ../desktop/out/web --clear",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit"
   },

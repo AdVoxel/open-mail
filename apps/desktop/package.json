@@ -6,7 +6,8 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run export:web -w @mail-app/mobile && electron-vite build",
+    "build": "node ./build.mjs",
+    "build:electron": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json",
     "dist:mac": "npm run build && electron-builder --mac dmg --arm64",
@@ -43,12 +44,14 @@
       "artifactName": "Mail-${version}-${arch}.${ext}"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "../mobile/assets/mail-icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "createStartMenuShortcut": true,
       "createDesktopShortcut": true,
       "artifactName": "Mail-Setup-${version}.${ext}"
     },

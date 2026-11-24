@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="120" y1="80" x2="900" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172B4D"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <linearGradient id="envelope" x1="270" y1="330" x2="760" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCEBFF"/>
+    </linearGradient>
+    <linearGradient id="flap" x1="270" y1="340" x2="760" y2="650" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#79D7FF"/>
+      <stop offset="1" stop-color="#4198F5"/>
+    </linearGradient>
+    <filter id="shadow" x="160" y="220" width="704" height="620" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#030814" flood-opacity=".34"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <circle cx="512" cy="512" r="346" fill="#FFFFFF" fill-opacity=".035"/>
+  <g filter="url(#shadow)">
+    <rect x="230" y="310" width="564" height="416" rx="72" fill="url(#envelope)"/>
+    <path d="M278 364 512 548 746 364" fill="none" stroke="url(#flap)" stroke-linecap="round" stroke-linejoin="round" stroke-width="58"/>
+    <path d="m266 682 191-164M758 682 567 518" fill="none" stroke="#91B9E7" stroke-linecap="round" stroke-width="38"/>
+  </g>
+  <circle cx="756" cy="276" r="76" fill="#FF7A69" stroke="#172B4D" stroke-width="22"/>
+  <path d="M756 234v84M714 276h84" stroke="#FFF" stroke-linecap="round" stroke-width="22"/>
+</svg>
